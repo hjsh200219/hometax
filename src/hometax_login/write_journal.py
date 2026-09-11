@@ -31,6 +31,8 @@ class WriteJournal:
         plan_id: str,
         target_key: str,
         payload_hash: str,
+        *,
+        unique_target: bool = False,
     ) -> Literal["started", "complete"]:
         self._validate_plan_id(plan_id)
         self._validate_hash("target_key", target_key)
@@ -59,12 +61,12 @@ class WriteJournal:
                 if status in {"in_flight", "unknown"}:
                     raise LoginError(
                         "WRITE_OUTCOME_UNKNOWN",
-                        "같은 거래처 쓰기 작업의 최종 결과를 확인해야 합니다.",
+                        "같은 대상 쓰기 작업의 최종 결과를 확인해야 합니다.",
                         409,
                     )
                 raise LoginError(
                     "WRITE_REJECTED",
-                    "거절된 거래처 쓰기 작업은 재시도할 수 없습니다.",
+                    "거절된 쓰기 작업은 재시도할 수 없습니다.",
                     409,
                 )
 
@@ -82,9 +84,28 @@ class WriteJournal:
             if blocking:
                 raise LoginError(
                     "WRITE_OUTCOME_UNKNOWN",
-                    "같은 거래처 쓰기 작업의 최종 결과를 확인해야 합니다.",
+                    "같은 대상 쓰기 작업의 최종 결과를 확인해야 합니다.",
                     409,
                 )
+
+            if unique_target:
+                complete = conn.execute(
+                    """
+                    SELECT 1
+                    FROM write_attempts
+                    WHERE target_key = ?
+                      AND status = 'complete'
+                      AND plan_id <> ?
+                    LIMIT 1
+                    """,
+                    (target_key, plan_id),
+                ).fetchone()
+                if complete:
+                    raise LoginError(
+                        "WRITE_TARGET_COMPLETE",
+                        "이미 완료된 대상 쓰기 작업입니다.",
+                        409,
+                    )
 
             conn.execute(
                 """

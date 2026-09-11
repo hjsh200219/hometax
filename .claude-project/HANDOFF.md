@@ -1,10 +1,20 @@
 # HomeTax 인수인계
 
 - 생성: 2026-09-11. 사용자 요청: Agent2 인증서 처리 로직을 재사용한 별도 Python 로그인 API.
-- 실행 대상: 우선 Mac 로컬. 세금계산서 발행은 범위 밖.
+- 실행 대상: 우선 Mac 로컬. 발행 API는 0.4.0에서 참조 구현을 추가했으며 기본 전송 비활성.
 - 위치: `ProjectTeoul/hometax`.
 - 서버: `uv run --env-file .env uvicorn hometax_login.api:create_app --factory --host 127.0.0.1 --port 8787 --no-access-log`.
 - API 키는 `.env`에 로컬 생성됨. 값 출력·커밋 금지. 인증서와 비밀번호는 저장하지 않음.
+- 0.4.0: 단건 일반 발행, 기재사항 정정(2장), 계약 해제/중복발급 취소 미리보기·확인 전송.
+  `docs/ISSUANCE.md` 필독. 사용자 승인으로 lxml/xmlsec 설치, 입력 개인키/암호는 요청 메모리만 사용.
+  `HOMETAX_INVOICE_WRITES_ENABLED=false` 기본. 전송 활성화에는 별도 raw/base64 프로필 명시가 필요하나
+  실제 MagicLine 전송 호환성·실발행은 미검증이다. 라이브 검사에서는 모든 C/A action을 차단했다.
+- 고유 client_reference는 재시도마다 바꾸지 않는다. 정정/취소는 원본 승인번호를 중복 방지 키로 사용.
+  C04/C03 시작 전에 저널에 기록하고 부분 발급/응답 유실은 미확정으로 차단. 조회 없이 재발행 금지.
+- 실제 클라이언트 + 실제 XML 서명 + 모의 HTTP로 발행 raw/base64, 정정 2장, 취소 2사유 및
+  재조회 변조 후 unknown/retry 차단을 검증. 실계정 미리보기 1/2/1장 200, 쓰기 시도 0 확인.
+- 0.4.0 검증: pytest 268개, ruff/format/compileall/build 통과. 독립 보안 검토 HIGH/CRITICAL 0.
+  배포 패키지에 NPKI/.env/.state 등 비공개 런타임 파일이 포함되지 않는지도 확인.
 - Mac arm64에서 인증서 암복호화·서명 및 세션/HTTP 테스트 검증.
 - 2026-09-11 사용자 승인 실인증: NPKI 디스크(`04`) 로그인 및 permission 세션 재확인 성공.
 - 전자세금계산서 조회 API 추가: 목록(매출/매입), 기간 합계, 목록에서 확인된 승인번호 상세.

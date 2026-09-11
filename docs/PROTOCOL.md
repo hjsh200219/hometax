@@ -84,6 +84,31 @@
   영속 SQLite 저널과 대상/사업자 스코프 재확인, 전송 후 재조회 검증을 적용했다.
 - 신규 종사업장 등록은 팝업 선택 규격의 추가 검증이 필요하여 409로 거절한다.
 
+## 발행·정정·취소 참조 구현 (0.4.0)
+
+- 사용자 승인으로 `lxml`/`xmlsec` 추가. API·로컬 서명·모의 전송을 구현했지만 실발행은 하지 않았다.
+- 일반 화면 `UTEETBAA01`: `ATEETBAA002R04`로 작성일 기준 발급 유형 검사,
+  `ATEETBAA002C04` XML 생성, `ATEETBAA002C05` 최종 발급.
+- 기재사항 정정(01) 화면 `UTEETBAA44`, 계약 해제(04) `UTEETBAA48`, 중복발급 취소(06) `UTEETBAA42`.
+  수정 XML 생성/최종 발급은 `ATEETBAA003C03`/`ATEETBAA003C04`이다.
+- `isnScrnClCd=10`은 공동인증서 건별 발급 구분이다. 화면 번호 42/44/48과 혼동하지 않는다.
+  2번째 공급자 입력 키는 공개 `UTEETBAA44.xml` indatalist의 철자 **`splrInfrBIzSVO2`**를 따른다.
+- 정정 2장의 `xmlCntn/xmlCntn2`, `etan/etan2`, `trnsXmlCntn/trnsXmlCntn2`를 각각 검증·서명한다.
+  C04/C03 응답의 `tteet*` VO/list 및 `...2` 세트를 최종 요청에 승계한다.
+- 서명 전후 승인번호와 발급 후 재조회의 전체 문서 내용이 맞아야 완료 처리한다.
+  부분 처리·서명/통신/재조회 실패는 미확정 상태로 남기며 재전송하지 않는다.
+- 원본 XML 다운로드는 상세 R02의 form `downloadParam` JSON과 `downloadView=Y`로 읽을 수 있었다.
+  기존 문서의 표준 태그 구조만 확인했으며 원문 거래자료를 저장하지 않았다.
+- 표준 QName은 `{urn:kr:or:kec:standard:Tax:ReusableAggregateBusinessInformationEntitySchemaModule:1:0}TaxInvoice`.
+  종사업장번호는 `SpecifiedOrganization/TaxRegistrationID`이며 사업자번호(ID)와 다르다.
+  당사자의 `TypeCode`/`ClassificationCode`는 업태/종목, 품목 `InformationText`/`DescriptionText`는 규격/비고다.
+  정정 원본 연결은 `TaxInvoiceDocument/OriginalIssueID`, 사유는 `AmendmentStatusCode`다.
+- 표준 참고: [KEC 전자세금계산서 표준](https://www.entax.co.kr/images/etax.pdf),
+  [홈택스 단건 발급 화면](https://teet.hometax.go.kr/ui/et/b/a/a/UTEETBAA01.xml).
+- MagicLine 반환값의 실제 `raw`/`base64` 전송 호환성은 미검증이다. 기본 전송 비활성,
+  활성화 시 프로필 명시·확인 digest·동일 로그인 인증서·영속 저널을 요구한다.
+- 자동 이메일 C08/C13 호출은 제외. 재정정·부분 환입 등 다른 사유는 미지원.
+
 PFX/P12 로딩은 가능하지만 원본 개인키의 VID 부가 속성 복원은 지원하지 않으므로 홈택스
 로그인 요청은 `CERT_RANDOM_MISSING`으로 거부합니다. NPKI 종류·홈택스 등록 상태·추가 인증
 필요 여부는 실제 본인 인증서로 한 번의 로그인 절차를 검증해야 합니다.

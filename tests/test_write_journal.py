@@ -66,6 +66,48 @@ def test_same_plan_complete_is_idempotent(tmp_path):
     assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A) == "complete"
 
 
+def test_default_allows_new_plan_after_same_target_is_complete(tmp_path):
+    journal = WriteJournal(db_path(tmp_path))
+
+    assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A) == "started"
+    journal.finish(PLAN_A, "complete")
+
+    assert journal.begin(PLAN_B, TARGET_A, PAYLOAD_B) == "started"
+
+
+def test_unique_target_blocks_new_plan_after_same_target_is_complete(tmp_path):
+    journal = WriteJournal(db_path(tmp_path))
+
+    assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A, unique_target=True) == "started"
+    journal.finish(PLAN_A, "complete")
+
+    with pytest.raises(LoginError) as caught:
+        journal.begin(PLAN_B, TARGET_A, PAYLOAD_B, unique_target=True)
+    assert caught.value.code == "WRITE_TARGET_COMPLETE"
+    assert caught.value.status == 409
+
+
+def test_unique_target_keeps_same_plan_complete_idempotent(tmp_path):
+    journal = WriteJournal(db_path(tmp_path))
+
+    assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A, unique_target=True) == "started"
+    journal.finish(PLAN_A, "complete")
+
+    assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A, unique_target=True) == "complete"
+
+
+def test_unique_target_same_plan_complete_with_different_hash_is_conflict(tmp_path):
+    journal = WriteJournal(db_path(tmp_path))
+
+    assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A, unique_target=True) == "started"
+    journal.finish(PLAN_A, "complete")
+
+    with pytest.raises(LoginError) as caught:
+        journal.begin(PLAN_A, TARGET_A, PAYLOAD_B, unique_target=True)
+    assert caught.value.code == "WRITE_IDEMPOTENCY_CONFLICT"
+    assert caught.value.status == 409
+
+
 def test_new_plan_is_blocked_when_same_target_outcome_is_unknown(tmp_path):
     journal = WriteJournal(db_path(tmp_path))
 
@@ -77,11 +119,31 @@ def test_new_plan_is_blocked_when_same_target_outcome_is_unknown(tmp_path):
     assert caught.value.status == 409
 
 
+def test_unique_target_keeps_unknown_outcome_guard(tmp_path):
+    journal = WriteJournal(db_path(tmp_path))
+
+    assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A, unique_target=True) == "started"
+
+    with pytest.raises(LoginError) as caught:
+        journal.begin(PLAN_B, TARGET_A, PAYLOAD_B, unique_target=True)
+    assert caught.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert caught.value.status == 409
+
+
 def test_different_target_is_allowed_while_another_target_is_in_flight(tmp_path):
     journal = WriteJournal(db_path(tmp_path))
 
     assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A) == "started"
     assert journal.begin(PLAN_B, TARGET_B, PAYLOAD_B) == "started"
+
+
+def test_unique_target_allows_different_target(tmp_path):
+    journal = WriteJournal(db_path(tmp_path))
+
+    assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A, unique_target=True) == "started"
+    journal.finish(PLAN_A, "complete")
+
+    assert journal.begin(PLAN_B, TARGET_B, PAYLOAD_B, unique_target=True) == "started"
 
 
 def test_same_plan_with_different_hash_is_conflict(tmp_path):

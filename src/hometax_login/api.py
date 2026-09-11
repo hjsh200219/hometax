@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, model_validator
 
 from .certificates import CertificateError, load_certificate
 from .counterparty_changes import (
@@ -33,6 +33,13 @@ from .invoices import (
     TaxInvoicePage,
     TaxInvoiceSummary,
 )
+from .issuance_models import (
+    InvoiceCancelRequest,
+    InvoiceCorrectionRequest,
+    InvoiceIssueRequest,
+    InvoiceOperationPreview,
+    InvoiceOperationResult,
+)
 from .protocol import HometaxClient
 from .sessions import SessionStore
 from .write_journal import WriteJournal
@@ -45,13 +52,21 @@ class Settings:
     session_capacity: int = 128
     concurrent_logins: int = 4
     counterparty_writes_enabled: bool = False
+    invoice_writes_enabled: bool = False
     write_journal_path: str = ".state/counterparty-writes.sqlite3"
+    invoice_wire_encoding: Literal["raw", "base64"] | None = None
 
     def __post_init__(self):
         if type(self.counterparty_writes_enabled) is not bool:
             raise ValueError("counterparty_writes_enabled must be a boolean")
+        if type(self.invoice_writes_enabled) is not bool:
+            raise ValueError("invoice_writes_enabled must be a boolean")
         if not isinstance(self.write_journal_path, str) or not self.write_journal_path.strip():
             raise ValueError("write_journal_path must be a non-empty path")
+        if self.invoice_wire_encoding not in {None, "raw", "base64"}:
+            raise ValueError("invoice_wire_encoding must be 'raw', 'base64', or None")
+        if self.invoice_writes_enabled and self.invoice_wire_encoding is None:
+            raise ValueError("invoice_wire_encoding is required when invoice writes are enabled")
         if not self.api_keys or any(len(k) < 32 for k in self.api_keys):
             raise ValueError("HOMETAX_API_KEYS must contain API keys of at least 32 characters")
         if not 30 <= self.session_ttl <= 3600:
@@ -61,18 +76,20 @@ class Settings:
 
     @classmethod
     def from_env(cls):
-        writes_enabled = os.getenv("HOMETAX_COUNTERPARTY_WRITES_ENABLED", "false")
-        if writes_enabled not in {"true", "false"}:
-            raise ValueError("HOMETAX_COUNTERPARTY_WRITES_ENABLED must be 'true' or 'false'")
+        counterparty_writes_enabled = env_bool("HOMETAX_COUNTERPARTY_WRITES_ENABLED", "false")
+        invoice_writes_enabled = env_bool("HOMETAX_INVOICE_WRITES_ENABLED", "false")
+        invoice_wire_encoding = os.getenv("HOMETAX_INVOICE_WIRE_ENCODING", "") or None
         return cls(
             api_keys=tuple(
                 k.strip() for k in os.getenv("HOMETAX_API_KEYS", "").split(",") if k.strip()
             ),
             session_ttl=int(os.getenv("HOMETAX_SESSION_TTL", "600")),
-            counterparty_writes_enabled=writes_enabled == "true",
+            counterparty_writes_enabled=counterparty_writes_enabled,
+            invoice_writes_enabled=invoice_writes_enabled,
             write_journal_path=os.getenv(
                 "HOMETAX_WRITE_JOURNAL_PATH", ".state/counterparty-writes.sqlite3"
             ),
+            invoice_wire_encoding=invoice_wire_encoding,
         )
 
 
@@ -87,6 +104,26 @@ class CertificateRequest(BaseModel):
 class LoginRequest(CertificateRequest):
     # Explicit because public reference implementations differ; do not silently retry modes.
     login_type: Literal["03", "04"]
+
+
+class SubmitRequest(CertificateRequest):
+    cert_type: Literal["der"]
+    key_file: SecretStr
+    confirm: StrictBool
+    content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def confirmation(self):
+        if not self.confirm:
+            raise ValueError("Explicit confirmation is required")
+        return self
+
+
+def env_bool(name: str, default: str) -> bool:
+    value = os.getenv(name, default)
+    if value not in {"true", "false"}:
+        raise ValueError(f"{name} must be 'true' or 'false'")
+    return value == "true"
 
 
 def decode_file(value: SecretStr | None) -> bytes | None:
@@ -157,12 +194,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await task
             await store.close()
 
-    app = FastAPI(title="HomeTax API", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="HomeTax API", version="0.4.0", lifespan=lifespan)
     app.add_middleware(BodyLimit)
     app.state.client_factory = HometaxClient
-    app.state.counterparty_journal = (
-        WriteJournal(settings.write_journal_path) if settings.counterparty_writes_enabled else None
+    write_journal = (
+        WriteJournal(settings.write_journal_path)
+        if settings.counterparty_writes_enabled or settings.invoice_writes_enabled
+        else None
     )
+    app.state.counterparty_journal = write_journal if settings.counterparty_writes_enabled else None
+    app.state.invoice_journal = write_journal if settings.invoice_writes_enabled else None
     app.state.sessions = store
     bearer = HTTPBearer(auto_error=False)
 
@@ -199,7 +240,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(CertificateError)
     async def certificate_error(request: Request, error: CertificateError):
         return JSONResponse(
-            {"error": {"code": error.code, "message": error.message}}, status_code=422
+            {"error": {"code": error.code, "message": error.message}},
+            status_code=422,
+            headers=hometax_cache_headers(request),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -241,6 +284,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise LoginError("BUSY", "인증 요청을 처리 중입니다. 잠시 후 다시 시도하세요.", 429)
         async with semaphore:
             client = app.state.client_factory()
+            client.invoice_wire_encoding = settings.invoice_wire_encoding
             transferred = False
             try:
                 async with asyncio.timeout(60):
@@ -279,6 +323,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except TimeoutError:
             raise LoginError("INVOICE_TIMEOUT", "홈택스 조회 시간이 초과됐습니다.", 504) from None
 
+    @asynccontextmanager
+    async def invoice_operation_service(session_id: str, owner: str):
+        try:
+            async with asyncio.timeout(60):
+                async with store.lease(session_id, owner) as item:
+                    yield item.client.invoice_operations
+        except TimeoutError:
+            raise LoginError("INVOICE_TIMEOUT", "홈택스 조회 시간이 초과됐습니다.", 504) from None
+
     @app.get(
         "/v1/hometax/sessions/{session_id}/tax-invoices",
         response_model=TaxInvoicePage,
@@ -303,6 +356,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with invoice_service(session_id, owner) as invoices:
             return await invoices.summary(filters)
 
+    @app.post(
+        "/v1/hometax/sessions/{session_id}/tax-invoices/drafts",
+        response_model=InvoiceOperationPreview,
+    )
+    async def preview_invoice_issue(
+        session_id: str,
+        payload: InvoiceIssueRequest,
+        owner: Annotated[str, Depends(authorize)],
+    ):
+        async with invoice_operation_service(session_id, owner) as operations:
+            return await operations.preview_issue(payload)
+
     @app.get(
         "/v1/hometax/sessions/{session_id}/tax-invoices/{approval_number}",
         response_model=TaxInvoiceDetail,
@@ -314,6 +379,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ):
         async with invoice_service(session_id, owner) as invoices:
             return await invoices.detail(approval_number)
+
+    @app.post(
+        "/v1/hometax/sessions/{session_id}/tax-invoices/{approval_number}/corrections",
+        response_model=InvoiceOperationPreview,
+    )
+    async def preview_invoice_correction(
+        session_id: str,
+        approval_number: Annotated[str, Path(pattern=r"^[0-9]{8}[A-Za-z0-9]{16}$")],
+        payload: InvoiceCorrectionRequest,
+        owner: Annotated[str, Depends(authorize)],
+    ):
+        async with invoice_operation_service(session_id, owner) as operations:
+            return await operations.preview_correct(approval_number, payload)
+
+    @app.post(
+        "/v1/hometax/sessions/{session_id}/tax-invoices/{approval_number}/cancellations",
+        response_model=InvoiceOperationPreview,
+    )
+    async def preview_invoice_cancellation(
+        session_id: str,
+        approval_number: Annotated[str, Path(pattern=r"^[0-9]{8}[A-Za-z0-9]{16}$")],
+        payload: InvoiceCancelRequest,
+        owner: Annotated[str, Depends(authorize)],
+    ):
+        async with invoice_operation_service(session_id, owner) as operations:
+            return await operations.preview_cancel(approval_number, payload)
+
+    @app.post(
+        "/v1/hometax/sessions/{session_id}/tax-invoice-operations/{operation_id}/submit",
+        response_model=InvoiceOperationResult,
+    )
+    async def submit_invoice_operation(
+        session_id: str,
+        operation_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{16,100}$")],
+        payload: SubmitRequest,
+        owner: Annotated[str, Depends(authorize)],
+    ):
+        journal = app.state.invoice_journal
+        if journal is None:
+            raise LoginError(
+                "INVOICE_WRITES_DISABLED",
+                "세금계산서 발행 기능이 비활성화되어 있습니다.",
+                403,
+            )
+        async with invoice_operation_service(session_id, owner) as operations:
+            material = await material_for(payload)
+            return await operations.submit(
+                operation_id,
+                material,
+                journal,
+                payload.content_digest,
+            )
 
     @app.get(
         "/v1/hometax/sessions/{session_id}/counterparties",

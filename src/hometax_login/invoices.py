@@ -200,6 +200,7 @@ class TaxInvoiceClient:
         self.client = client
         self.business_tin: str | None = None
         self.business_mpb_no = ""
+        self.business_profile: dict = {}
         self.references: OrderedDict[str, tuple[str, TaxInvoice]] = OrderedDict()
 
     async def _business(self) -> tuple[str, str]:
@@ -241,6 +242,23 @@ class TaxInvoiceClient:
             self.references.clear()
             self.business_tin = tin
         self.business_mpb_no = branch
+        self.business_profile = {
+            key: session.get(key)
+            for key in (
+                "txprDscmNo",
+                "tnmNm",
+                "rprsFnm",
+                "adr",
+                "bcNm",
+                "itmNm",
+                "pubcUserNo",
+                "crtfUqno",
+                "etxivPkcYn",
+                "lgnCertCd",
+                "emlAdr",
+                "email",
+            )
+        }
         name = session.get("tnmNm")
         return tin, name if isinstance(name, str) else ""
 

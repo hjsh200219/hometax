@@ -8,10 +8,12 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import httpx
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.serialization import Encoding
 
 from .counterparty_changes import CounterpartyChangeManager
 from .errors import LoginError
+from .invoice_operations import InvoiceOperations
 from .invoices import TaxInvoiceClient
 
 if TYPE_CHECKING:
@@ -53,10 +55,16 @@ class HometaxClient:
         )
         self.invoices = TaxInvoiceClient(self)
         self.counterparty_changes = CounterpartyChangeManager(self.invoices)
+        self.signing_certificate_fingerprint: str | None = None
+        self.invoice_wire_encoding: str | None = None
+        self.invoice_operations = InvoiceOperations(self)
 
     async def close(self):
         self.invoices.references.clear()
+        self.invoices.business_profile.clear()
         self.counterparty_changes.clear()
+        self.invoice_operations.clear()
+        self.signing_certificate_fingerprint = None
         self.http.cookies.clear()
         await self.http.aclose()
 
@@ -154,7 +162,11 @@ class HometaxClient:
                 "인증서 등록 상태 또는 추가 인증을 확인하세요.",
                 401,
             )
-        return await self.verify()
+        identity = await self.verify()
+        self.signing_certificate_fingerprint = material.certificate.fingerprint(
+            hashes.SHA256()
+        ).hex()
+        return identity
 
     async def verify(self) -> dict[str, str]:
         text = await self._request(
