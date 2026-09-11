@@ -84,7 +84,7 @@ GET /v1/hometax/sessions/{session_id}/counterparties?name=휴맥스&page=1&page_
 ```
 
 홈택스의 **거래처 정보에 등록한 목록**입니다. 세금계산서에서 추출한 거래처 목록과 다를 수 있습니다.
-거래처 등록·수정·삭제는 제공하지 않습니다.
+거래처 등록·수정·삭제는 별도의 [미리보기·확인 API](COUNTERPARTIES.md)로 제공합니다.
 
 | 파라미터 | 값 |
 |---|---|

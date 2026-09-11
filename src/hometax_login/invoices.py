@@ -1,5 +1,7 @@
 """Read-only electronic tax invoices; upstream URLs/actions are never caller-controlled."""
 
+from __future__ import annotations
+
 import asyncio
 import calendar
 import re
@@ -194,7 +196,7 @@ def invoice_from_row(row: dict) -> TaxInvoice:
 
 
 class TaxInvoiceClient:
-    def __init__(self, client: "HometaxClient"):
+    def __init__(self, client: HometaxClient):
         self.client = client
         self.business_tin: str | None = None
         self.business_mpb_no = ""
@@ -498,7 +500,7 @@ class TaxInvoiceClient:
             items=items,
         )
 
-    async def counterparties(self, query: CounterpartyQuery) -> CounterpartyPage:
+    async def _counterparty_rows(self, query: CounterpartyQuery) -> tuple[str, list[dict], int]:
         tin, company = await self._business()
         page_info = {"pageNum": query.page, "pageSize": query.page_size, "totalCount": 0}
         data = self.client._json(
@@ -540,6 +542,10 @@ class TaxInvoiceClient:
             or len(rows) != min(query.page_size, max(0, total - (query.page - 1) * query.page_size))
         ):
             raise changed()
+        return company, rows, total
+
+    async def counterparties(self, query: CounterpartyQuery) -> CounterpartyPage:
+        company, rows, total = await self._counterparty_rows(query)
         items = []
         for row in rows:
             if (

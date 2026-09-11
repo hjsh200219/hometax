@@ -16,6 +16,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from .certificates import CertificateError, load_certificate
+from .counterparty_changes import (
+    ApplyCounterpartyChange,
+    CounterpartyChangePreview,
+    CounterpartyChangeResult,
+    CounterpartyCreate,
+    CounterpartyPatch,
+)
 from .errors import LoginError
 from .invoices import (
     CounterpartyPage,
@@ -28,6 +35,7 @@ from .invoices import (
 )
 from .protocol import HometaxClient
 from .sessions import SessionStore
+from .write_journal import WriteJournal
 
 
 @dataclass
@@ -36,8 +44,14 @@ class Settings:
     session_ttl: int = 600
     session_capacity: int = 128
     concurrent_logins: int = 4
+    counterparty_writes_enabled: bool = False
+    write_journal_path: str = ".state/counterparty-writes.sqlite3"
 
     def __post_init__(self):
+        if type(self.counterparty_writes_enabled) is not bool:
+            raise ValueError("counterparty_writes_enabled must be a boolean")
+        if not isinstance(self.write_journal_path, str) or not self.write_journal_path.strip():
+            raise ValueError("write_journal_path must be a non-empty path")
         if not self.api_keys or any(len(k) < 32 for k in self.api_keys):
             raise ValueError("HOMETAX_API_KEYS must contain API keys of at least 32 characters")
         if not 30 <= self.session_ttl <= 3600:
@@ -47,11 +61,18 @@ class Settings:
 
     @classmethod
     def from_env(cls):
+        writes_enabled = os.getenv("HOMETAX_COUNTERPARTY_WRITES_ENABLED", "false")
+        if writes_enabled not in {"true", "false"}:
+            raise ValueError("HOMETAX_COUNTERPARTY_WRITES_ENABLED must be 'true' or 'false'")
         return cls(
             api_keys=tuple(
                 k.strip() for k in os.getenv("HOMETAX_API_KEYS", "").split(",") if k.strip()
             ),
             session_ttl=int(os.getenv("HOMETAX_SESSION_TTL", "600")),
+            counterparty_writes_enabled=writes_enabled == "true",
+            write_journal_path=os.getenv(
+                "HOMETAX_WRITE_JOURNAL_PATH", ".state/counterparty-writes.sqlite3"
+            ),
         )
 
 
@@ -136,9 +157,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await task
             await store.close()
 
-    app = FastAPI(title="HomeTax API", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="HomeTax API", version="0.3.0", lifespan=lifespan)
     app.add_middleware(BodyLimit)
     app.state.client_factory = HometaxClient
+    app.state.counterparty_journal = (
+        WriteJournal(settings.write_journal_path) if settings.counterparty_writes_enabled else None
+    )
     app.state.sessions = store
     bearer = HTTPBearer(auto_error=False)
 
@@ -246,6 +270,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except TimeoutError:
             raise LoginError("INVOICE_TIMEOUT", "홈택스 조회 시간이 초과됐습니다.", 504) from None
 
+    @asynccontextmanager
+    async def management_service(session_id: str, owner: str):
+        try:
+            async with asyncio.timeout(60):
+                async with store.lease(session_id, owner) as item:
+                    yield item.client.counterparty_changes
+        except TimeoutError:
+            raise LoginError("INVOICE_TIMEOUT", "홈택스 조회 시간이 초과됐습니다.", 504) from None
+
     @app.get(
         "/v1/hometax/sessions/{session_id}/tax-invoices",
         response_model=TaxInvoicePage,
@@ -293,6 +326,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ):
         async with invoice_service(session_id, owner) as invoices:
             return await invoices.counterparties(query)
+
+    @app.post(
+        "/v1/hometax/sessions/{session_id}/counterparties",
+        response_model=CounterpartyChangePreview,
+    )
+    async def preview_counterparty_create(
+        session_id: str,
+        payload: CounterpartyCreate,
+        owner: Annotated[str, Depends(authorize)],
+    ):
+        async with management_service(session_id, owner) as changes:
+            return await changes.preview_create(payload)
+
+    @app.patch(
+        "/v1/hometax/sessions/{session_id}/counterparties/{business_number}",
+        response_model=CounterpartyChangePreview,
+    )
+    async def preview_counterparty_update(
+        session_id: str,
+        business_number: Annotated[str, Path(pattern=r"^[0-9]{10}$")],
+        payload: CounterpartyPatch,
+        owner: Annotated[str, Depends(authorize)],
+        branch_number: Annotated[str, Query(pattern=r"^(?:[0-9]{4})?$")] = "",
+    ):
+        async with management_service(session_id, owner) as changes:
+            return await changes.preview_update(business_number, branch_number, payload)
+
+    @app.delete(
+        "/v1/hometax/sessions/{session_id}/counterparties/{business_number}",
+        response_model=CounterpartyChangePreview,
+    )
+    async def preview_counterparty_delete(
+        session_id: str,
+        business_number: Annotated[str, Path(pattern=r"^[0-9]{10}$")],
+        owner: Annotated[str, Depends(authorize)],
+        branch_number: Annotated[str, Query(pattern=r"^(?:[0-9]{4})?$")] = "",
+    ):
+        async with management_service(session_id, owner) as changes:
+            return await changes.preview_delete(business_number, branch_number)
+
+    @app.post(
+        "/v1/hometax/sessions/{session_id}/counterparty-changes/{change_id}/apply",
+        response_model=CounterpartyChangeResult,
+    )
+    async def apply_counterparty_change(
+        session_id: str,
+        change_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{16,100}$")],
+        payload: ApplyCounterpartyChange,
+        owner: Annotated[str, Depends(authorize)],
+    ):
+        journal = app.state.counterparty_journal
+        if journal is None:
+            raise LoginError(
+                "COUNTERPARTY_WRITES_DISABLED",
+                "거래처 쓰기 기능이 비활성화되어 있습니다.",
+                403,
+            )
+        async with management_service(session_id, owner) as changes:
+            return await changes.apply(change_id, journal)
 
     @app.delete("/v1/hometax/sessions/{session_id}", status_code=204)
     async def close_session(session_id: str, owner: Annotated[str, Depends(authorize)]):

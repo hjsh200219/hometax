@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from cryptography.hazmat.primitives.serialization import Encoding
 
+from .counterparty_changes import CounterpartyChangeManager
 from .errors import LoginError
 from .invoices import TaxInvoiceClient
 
@@ -51,9 +52,11 @@ class HometaxClient:
             },
         )
         self.invoices = TaxInvoiceClient(self)
+        self.counterparty_changes = CounterpartyChangeManager(self.invoices)
 
     async def close(self):
         self.invoices.references.clear()
+        self.counterparty_changes.clear()
         self.http.cookies.clear()
         await self.http.aclose()
 

@@ -62,8 +62,27 @@
 - 등록 거래처 화면 `/ui/et/b/a/e/UTEETBAB02.xml`, 읽기 action `ATEETBAE001R06`,
   응답 `myClplcListDVO`/`pageInfoVO`. 검색은 `txprNm`, `txprDscmNoEncCntn`, `rprsFnm`;
   빈 검색값은 이 화면에서는 전체를 의미한다. 정렬 `srtClCd=1`, `srtOpt=01`은 이름 오름차순.
-- 거래처 삭제 `ATEETBAE001D03`, 주거래처 변경 `ATEETBAB002U01`, 수정 화면은 호출하지 않는다.
+- 목록 화면의 **일괄 삭제** `ATEETBAE001D03`와 주거래처 표시 변경 `ATEETBAB002U01`은 미지원이다.
+  0.3.0의 **단건 삭제**는 아래 상세 화면 계약 `ATEETBAE001D04`만 사용한다.
 - 발행/수정/취소/신고 요청은 수행하지 않는다. 거래 내용·인증서·비밀번호·토큰·쿠키를 문서에 기록하지 않는다.
+
+## 거래처 관리 확장 (0.3.0)
+
+- 주소록 등록/수정/단건 삭제를 미리보기→명시적 확인으로 추가했다. 세금계산서 발행은 여전히 제외.
+- 등록 화면 `UTEETBAB04`: 단위과세 조회 `ATTABZAA001R05`, 납세자 확인 `ATTABZAA001R01`,
+  중복 확인 `ATEETBAA001R04`, 등록 `ATEETBAA001C01`.
+- R05는 공개 코드의 `mpbCtlDVO.count`와 실응답의 `mpbCtlDVOList` 형식을 구분한다.
+  목록형의 빈 목록을 수용하려면 페이지 총 건수도 0이어야 한다. 미지정/불일치 건수는 오류다.
+- R01의 `bmanCrpNtplDVO.tin/txprClsfCd/txprDscmNoEncCntn`을 실조회로 확인했다.
+  R04 실응답의 중복 건수 `clplcCnt`는 JSON 루트에 있다. 기존 `response.clplcCnt`도 지원하지만
+  건수가 없으면 0으로 간주하지 않는다.
+- 상세 화면 `UTEETBAB03`: `ATEETBAE001R07`로 담당자/식별자를 읽고,
+  `ATEETBAE001U02` 수정 또는 `ATEETBAE001D04` 단건 삭제 요청을 구성한다.
+- 실조회에서 담당자 1행(주담당자)도 확인했다. 없는 역할은 폼과 동일하게 빈 담당자/식별자로 표현하고,
+  기존 담당자의 `chrgSn`은 보존한다. 미지정 API 필드는 기존 값으로 병합한다.
+- 실제 쓰기 액션은 미실행. 서버 쓰기 기본 false, confirm true, 5분 만료 미리보기,
+  영속 SQLite 저널과 대상/사업자 스코프 재확인, 전송 후 재조회 검증을 적용했다.
+- 신규 종사업장 등록은 팝업 선택 규격의 추가 검증이 필요하여 409로 거절한다.
 
 PFX/P12 로딩은 가능하지만 원본 개인키의 VID 부가 속성 복원은 지원하지 않으므로 홈택스
 로그인 요청은 `CERT_RANDOM_MISSING`으로 거부합니다. NPKI 종류·홈택스 등록 상태·추가 인증
