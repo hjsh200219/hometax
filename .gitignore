@@ -1,0 +1,13 @@
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.der
+*.key
+*.pfx
+*.p12
+*.pem
+*.session.json
+dist/
