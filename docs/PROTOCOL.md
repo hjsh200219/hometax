@@ -35,7 +35,35 @@
 - 공개 챌린지 POST HTTP 200, JSON `pkcEncSsn` 존재 확인. 값과 쿠키는 기록하지 않음.
 - 비로그인 `permission.do`는 `resultMsg`만 있고 인증 사용자 `sessionMap`이 없음.
 - 로컬 서버 상태 조회 200 / 인증 없는 검증 요청 401 / 합성 PFX 검증 200.
-- 실인증서 로그인, 로그인 구분별 호환성, 실제 인증 후 sessionMap 계약은 미검증.
+- 이후 사용자 승인 실인증: NPKI `04` 로그인과 `sessionMap` 사용자 식별자, 후속 재확인 성공.
+- 공식 `UTXPPABA01.xml`의 `fn_lgnClCdFromHtml5`에서 `03=browser`, `04=hdd` 확인.
+- 로그인 구분 `03`과 다른 인증서의 호환성은 미검증.
+
+## 전자세금계산서 조회 (2026-09-11)
+
+- 공식 `/websquare/app.js`의 운영 ET 호스트는 `https://teet.hometax.go.kr`.
+- 포털 로그인만으로 ET 세션이 생기지 않는다. 포털 `/token.do` JSON을 메모리에서 받아
+  ET `/permission.do?screenId=UTEETBDA01&domain=hometax.go.kr`에 `popupYn:false`와 함께 전송한다.
+- `sessionMap` 사용자와 사업자 TIN을 확인한다. 사업자 선택은 `common_teet.xml`의
+  `fn_haboTitleChgFortxfrBmanLgn`/`fn_getSessionTin`에 따라 `tin`/`cnvrTin`을 사용한다.
+- 목록 화면 `/ui/et/b/d/a/UTEETBDA01.xml`: 조회 action `ATEETBDA001R01`,
+  입력 `etxivIsnBrkdTermDVOPrmt`, 출력 `etxivIsnBrkdTermDVOList`와 `pageInfoVO`.
+- **거짓 0건 회귀:** `/websquare/config.js`의 `allValue`는 `all`이다.
+  `etxivClsfCd`, `etxivKndCd`, `isnTypeCd`를 빈 문자열로 보내면 정상 응답이어도
+  실제 내역이 누락된다. 세 값을 `all`로 바꿔 사용자가 알려준 실제 건의 조회를 확인했다.
+- `prhSlsClCd`: `01=매출`, `02=매입`. `dtCl`: `01=작성일`, `02=발급일`, `03=전송일`.
+- 상세 팝업 `/ui/et/b/d/a/UTEETBDA38.xml`: 조회 action `ATEETBDA001R02`,
+  본문 `etxivIsnBrkdTermDVO`, 품목 `lsatInfrBizSVOList`.
+- 목록의 승인번호는 `8자리-8자리-8자리`; API와 상세 요청에서는 하이픈을 제거한다.
+  앞 8자리는 숫자, 뒤 16자리는 영문·숫자다. 매입 실응답에서 영문 포함 확인, 대소문자 보존.
+- 실검증: 동일 사업자의 9월 매출 1건에 대한 목록·합계·상세의 건수/금액 일치.
+  다량 페이지 수집과 다른 사업자는 합성 응답 테스트 대상이며 실운영 검증을 뜻하지 않는다.
+- 매입 목록·상세도 동일 인증서로 실검증. 등록 거래처 전체 11건, 거래처명 검색 1건 확인.
+- 등록 거래처 화면 `/ui/et/b/a/e/UTEETBAB02.xml`, 읽기 action `ATEETBAE001R06`,
+  응답 `myClplcListDVO`/`pageInfoVO`. 검색은 `txprNm`, `txprDscmNoEncCntn`, `rprsFnm`;
+  빈 검색값은 이 화면에서는 전체를 의미한다. 정렬 `srtClCd=1`, `srtOpt=01`은 이름 오름차순.
+- 거래처 삭제 `ATEETBAE001D03`, 주거래처 변경 `ATEETBAB002U01`, 수정 화면은 호출하지 않는다.
+- 발행/수정/취소/신고 요청은 수행하지 않는다. 거래 내용·인증서·비밀번호·토큰·쿠키를 문서에 기록하지 않는다.
 
 PFX/P12 로딩은 가능하지만 원본 개인키의 VID 부가 속성 복원은 지원하지 않으므로 홈택스
 로그인 요청은 `CERT_RANDOM_MISSING`으로 거부합니다. NPKI 종류·홈택스 등록 상태·추가 인증

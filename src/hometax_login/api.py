@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -17,6 +17,15 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from .certificates import CertificateError, load_certificate
 from .errors import LoginError
+from .invoices import (
+    CounterpartyPage,
+    CounterpartyQuery,
+    InvoiceFilters,
+    InvoiceQuery,
+    TaxInvoiceDetail,
+    TaxInvoicePage,
+    TaxInvoiceSummary,
+)
 from .protocol import HometaxClient
 from .sessions import SessionStore
 
@@ -127,11 +136,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await task
             await store.close()
 
-    app = FastAPI(title="HomeTax Login API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="HomeTax API", version="0.2.0", lifespan=lifespan)
     app.add_middleware(BodyLimit)
     app.state.client_factory = HometaxClient
     app.state.sessions = store
     bearer = HTTPBearer(auto_error=False)
+
+    @app.middleware("http")
+    async def hometax_no_store(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/v1/hometax"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+        return response
 
     async def authorize(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
@@ -142,10 +159,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise LoginError("UNAUTHORIZED", "API 인증이 필요합니다.", 401)
         return hashlib.sha256(token.encode()).hexdigest()
 
+    def hometax_cache_headers(request: Request):
+        if not request.url.path.startswith("/v1/hometax"):
+            return {}
+        return {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
     @app.exception_handler(LoginError)
     async def login_error(request: Request, error: LoginError):
         return JSONResponse(
-            {"error": {"code": error.code, "message": error.message}}, status_code=error.status
+            {"error": {"code": error.code, "message": error.message}},
+            status_code=error.status,
+            headers=hometax_cache_headers(request),
         )
 
     @app.exception_handler(CertificateError)
@@ -160,6 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(
             {"error": {"code": "INVALID_REQUEST", "message": "요청 필드와 형식을 확인하세요."}},
             status_code=422,
+            headers=hometax_cache_headers(request),
         )
 
     @app.get("/healthz")
@@ -211,6 +236,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with store.lease(session_id, owner) as item:
             item.identity = await item.client.verify()
             return session_response(item)
+
+    @asynccontextmanager
+    async def invoice_service(session_id: str, owner: str):
+        try:
+            async with asyncio.timeout(60):
+                async with store.lease(session_id, owner) as item:
+                    yield item.client.invoices
+        except TimeoutError:
+            raise LoginError("INVOICE_TIMEOUT", "홈택스 조회 시간이 초과됐습니다.", 504) from None
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/tax-invoices",
+        response_model=TaxInvoicePage,
+    )
+    async def tax_invoices(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        query: Annotated[InvoiceQuery, Query()],
+    ):
+        async with invoice_service(session_id, owner) as invoices:
+            return await invoices.list(query)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/tax-invoices/summary",
+        response_model=TaxInvoiceSummary,
+    )
+    async def tax_invoice_summary(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        filters: Annotated[InvoiceFilters, Query()],
+    ):
+        async with invoice_service(session_id, owner) as invoices:
+            return await invoices.summary(filters)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/tax-invoices/{approval_number}",
+        response_model=TaxInvoiceDetail,
+    )
+    async def tax_invoice_detail(
+        session_id: str,
+        approval_number: Annotated[str, Path(pattern=r"^[0-9]{8}[A-Za-z0-9]{16}$")],
+        owner: Annotated[str, Depends(authorize)],
+    ):
+        async with invoice_service(session_id, owner) as invoices:
+            return await invoices.detail(approval_number)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/counterparties",
+        response_model=CounterpartyPage,
+    )
+    async def counterparties(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        query: Annotated[CounterpartyQuery, Query()],
+    ):
+        async with invoice_service(session_id, owner) as invoices:
+            return await invoices.counterparties(query)
 
     @app.delete("/v1/hometax/sessions/{session_id}", status_code=204)
     async def close_session(session_id: str, owner: Annotated[str, Depends(authorize)]):

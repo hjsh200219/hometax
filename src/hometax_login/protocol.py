@@ -11,6 +11,7 @@ import httpx
 from cryptography.hazmat.primitives.serialization import Encoding
 
 from .errors import LoginError
+from .invoices import TaxInvoiceClient
 
 if TYPE_CHECKING:
     from .certificates import CertificateMaterial
@@ -49,8 +50,11 @@ class HometaxClient:
                 "Referer": LOGIN_PAGE,
             },
         )
+        self.invoices = TaxInvoiceClient(self)
 
     async def close(self):
+        self.invoices.references.clear()
+        self.http.cookies.clear()
         await self.http.aclose()
 
     async def _request(self, method: str, path: str, **kwargs) -> str:
