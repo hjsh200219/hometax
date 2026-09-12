@@ -7,3 +7,5 @@
 - [macos-path-compare-needs-nfc-normalization](macos-path-compare-needs-nfc-normalization.md) — 한글 경로는 NFD 저장·NFC 인자. samefile로 비교
 - [cert-selection-needs-fingerprint-not-path](cert-selection-needs-fingerprint-not-path.md) — 인증서 기억은 경로+지문. 갱신이면 다시 묻는다
 - [cli-write-path-two-preconditions](cli-write-path-two-preconditions.md) — 쓰기는 --wire 필수, 미리보기는 같은 실행 안에서만 유효
+- [financial-lists-have-different-schemas](financial-lists-have-different-schemas.md) — 카드매출 목록 셋은 스키마가 다르다. 하나만 읽으면 금액 0
+- [identifier-fields-need-the-business-number-gate](identifier-fields-need-the-business-number-gate.md) — *EncCntn은 사업자번호 정규식 통과분만 노출
