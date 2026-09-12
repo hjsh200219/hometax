@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import getpass
 import json
 import os
 import sys
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -20,14 +22,21 @@ from pathlib import Path
 from .cert_discovery import (
     CertificateEntry,
     discover,
+    home_dir,
     load_selection,
     resolve_selection,
     save_selection,
     usable,
 )
 from .certificates import CertificateError, load_certificate
+from .counterparty_changes import CounterpartyCreate, CounterpartyPatch
 from .errors import LoginError
 from .invoices import CounterpartyQuery, InvoiceFilters, InvoiceQuery
+from .issuance_models import (
+    InvoiceCancelRequest,
+    InvoiceCorrectionRequest,
+    InvoiceIssueRequest,
+)
 from .local_session import (
     clear_session,
     client_from_session,
@@ -36,6 +45,7 @@ from .local_session import (
     save_session,
 )
 from .protocol import HometaxClient
+from .write_journal import WriteJournal
 
 MAX_MONTHS_PER_QUERY = 3
 REASON_MESSAGE = {
@@ -411,6 +421,127 @@ async def cmd_counterparties(context: Context) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ 쓰기
+
+
+def journal_path() -> Path:
+    directory = home_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    return directory / "writes.sqlite3"
+
+
+def open_journal() -> WriteJournal:
+    """중복 전송을 막는 영속 저널. 미확정 작업이 남으면 같은 대상을 차단한다."""
+    return WriteJournal(journal_path())
+
+
+def load_payload(args: argparse.Namespace) -> dict:
+    path = getattr(args, "file", None)
+    if not path:
+        return {}
+    try:
+        body = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise CommandError(f"입력 파일을 읽지 못했습니다: {error}") from None
+    if not isinstance(body, dict):
+        raise CommandError("입력 파일은 JSON 객체여야 합니다.")
+    return body
+
+
+def show_preview(context: Context, preview, applied=None) -> None:
+    payload = {"preview": preview.model_dump(mode="json")}
+    if applied is not None:
+        payload["result"] = applied.model_dump(mode="json")
+    lines = [json.dumps(payload, ensure_ascii=False, indent=1, default=str)]
+    if applied is None:
+        lines.append("미리보기만 했습니다. 실제로 반영하려면 같은 명령에 --yes 를 붙이세요.")
+    emit(context, payload, lines)
+
+
+async def counterparty_change(context: Context, action: str) -> int:
+    args = context.args
+    payload = load_payload(args)
+    client, _ = await session_client(args)
+    try:
+        manager = client.counterparty_changes
+        if action == "add":
+            fields = {
+                "business_number": args.business_number,
+                "branch_number": getattr(args, "branch", "") or "",
+                "name": args.name,
+                "representative_name": getattr(args, "representative", None) or "",
+                **payload,
+            }
+            preview = await manager.preview_create(CounterpartyCreate(**fields))
+        elif action == "edit":
+            if not payload:
+                raise CommandError("바꿀 내용을 --file 로 지정하세요.")
+            preview = await manager.preview_update(
+                args.business_number,
+                getattr(args, "branch", "") or "",
+                CounterpartyPatch(**payload),
+            )
+        else:
+            preview = await manager.preview_delete(
+                args.business_number, getattr(args, "branch", "") or ""
+            )
+        applied = None
+        if args.yes:
+            applied = await manager.apply(preview.change_id, open_journal())
+        show_preview(context, preview, applied)
+    finally:
+        await client.close()
+    return 0
+
+
+async def invoice_operation(context: Context, action: str) -> int:
+    args = context.args
+    payload = load_payload(args)
+    if args.yes and not getattr(args, "wire", None):
+        raise CommandError(
+            "전송에는 --wire raw 또는 --wire base64 가 필요합니다(홈택스 전송 형식)."
+        )
+    entry = pick_certificate(args) if args.yes else None
+    material = (
+        load_certificate(
+            entry.cert_path.read_bytes(), entry.key_path.read_bytes(), read_password(), "der"
+        )
+        if entry
+        else None
+    )
+    client, _ = await session_client(args)
+    try:
+        operations = client.invoice_operations
+        if action == "issue":
+            payload.setdefault("client_reference", str(uuid.uuid4()))
+            preview = await operations.preview_issue(InvoiceIssueRequest(**payload))
+        elif action == "correct":
+            payload.setdefault("client_reference", str(uuid.uuid4()))
+            payload.setdefault("reason", "clerical_error")
+            preview = await operations.preview_correct(
+                args.approval, InvoiceCorrectionRequest(**payload)
+            )
+        else:
+            payload.setdefault("client_reference", str(uuid.uuid4()))
+            fields = {
+                "reason": args.reason,
+                "written_date": args.written_date or date.today().isoformat(),
+                **payload,
+            }
+            preview = await operations.preview_cancel(args.approval, InvoiceCancelRequest(**fields))
+        applied = None
+        if args.yes:
+            client.invoice_wire_encoding = args.wire
+            applied = await operations.submit(
+                preview.operation_id, material, open_journal(), preview.content_digest
+            )
+        show_preview(context, preview, applied)
+    finally:
+        await client.close()
+    return 0
+
+
 # ------------------------------------------------------------------ 진입점
 
 
@@ -467,6 +598,65 @@ def build_parser() -> argparse.ArgumentParser:
     counterparties.add_argument("--representative", help="대표자명 검색")
     add_cert_options(counterparties)
     counterparties.set_defaults(handler=cmd_counterparties)
+
+    def add_write_options(target):
+        target.add_argument(
+            "--yes", action="store_true", help="미리보기 뒤 실제로 홈택스에 전송합니다"
+        )
+        target.add_argument("--file", help="요청 본문 JSON 파일")
+        add_cert_options(target)
+
+    add_cp = sub.add_parser("add-counterparty", help="거래처 등록(기본 미리보기)")
+    add_cp.add_argument("--business-number", required=True, help="사업자등록번호 10자리")
+    add_cp.add_argument("--name", required=True, help="거래처명")
+    add_cp.add_argument("--representative", help="대표자명")
+    add_cp.add_argument("--branch", default="", help="종사업장번호 4자리")
+    add_write_options(add_cp)
+    add_cp.set_defaults(handler=functools.partial(counterparty_change, action="add"))
+
+    edit_cp = sub.add_parser("edit-counterparty", help="거래처 수정(기본 미리보기)")
+    edit_cp.add_argument("--business-number", required=True)
+    edit_cp.add_argument("--branch", default="")
+    add_write_options(edit_cp)
+    edit_cp.set_defaults(handler=functools.partial(counterparty_change, action="edit"))
+
+    remove_cp = sub.add_parser("remove-counterparty", help="거래처 삭제(기본 미리보기)")
+    remove_cp.add_argument("--business-number", required=True)
+    remove_cp.add_argument("--branch", default="")
+    add_write_options(remove_cp)
+    remove_cp.set_defaults(handler=functools.partial(counterparty_change, action="remove"))
+
+    def add_wire_option(target):
+        target.add_argument(
+            "--wire", choices=["raw", "base64"], help="홈택스 전송 형식(--yes 일 때 필수)"
+        )
+
+    issue = sub.add_parser("issue", help="세금계산서 발행(기본 미리보기)")
+    issue.add_argument("--file", dest="file", required=True, help="발행 요청 JSON")
+    issue.add_argument("--yes", action="store_true", help="미리보기 뒤 실제로 발행합니다")
+    add_wire_option(issue)
+    add_cert_options(issue)
+    issue.set_defaults(handler=functools.partial(invoice_operation, action="issue"))
+
+    correct = sub.add_parser("correct", help="기재사항 정정(기본 미리보기)")
+    correct.add_argument("--approval", required=True, help="원본 승인번호")
+    correct.add_argument("--file", dest="file", required=True, help="정정 요청 JSON")
+    correct.add_argument("--yes", action="store_true")
+    add_wire_option(correct)
+    add_cert_options(correct)
+    correct.set_defaults(handler=functools.partial(invoice_operation, action="correct"))
+
+    cancel = sub.add_parser("cancel", help="전액 취소(기본 미리보기)")
+    cancel.add_argument("--approval", required=True, help="원본 승인번호")
+    cancel.add_argument(
+        "--reason", required=True, choices=["contract_cancellation", "duplicate_issue"]
+    )
+    cancel.add_argument("--written-date", dest="written_date", help="작성일 YYYY-MM-DD")
+    cancel.add_argument("--file", dest="file", help="추가 필드 JSON")
+    cancel.add_argument("--yes", action="store_true")
+    add_wire_option(cancel)
+    add_cert_options(cancel)
+    cancel.set_defaults(handler=functools.partial(invoice_operation, action="cancel"))
 
     return parser
 
