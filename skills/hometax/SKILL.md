@@ -26,7 +26,7 @@ hometax certs                                               # 인증서가 보�
 ## 조회
 
 ```bash
-hometax login                                   # 세션 10분, 이후 명령은 재로그인 없음
+hometax login                                   # 조회 세션 10분; 발행·정정·취소 --yes는 새 인증
 hometax summary --ytd                           # 올해 매출 합계
 hometax summary --ytd --direction purchases     # 매입
 hometax invoices --from 2026-07-01 --to 2026-09-12 --json
@@ -43,7 +43,7 @@ hometax status / hometax logout
 - 홈택스는 한 번에 3개월까지만 조회한다. `--ytd`나 긴 기간은 자동으로 나눠 부르고 합산한다.
 - `--basis issued|written|transmitted`로 기준일을 바꾼다(기본 발급일).
 - `--json`을 붙이면 집계·가공용 출력이 된다.
-- 일반 은행 입출금 거래내역과 PG 경유 카드매출은 홈택스 조회 범위 밖이므로 별도 연동한다.
+- 일반 은행 입출금 거래내역은 별도 연동한다. PG 경유 카드매출은 홈택스가 제공하는 판매·결제대행분까지 포함하며, 제출 지연·범위 차이는 정산자료와 대조한다.
 
 ## 쓰기 — 반드시 두 단계
 

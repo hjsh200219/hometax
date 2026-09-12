@@ -15,4 +15,5 @@ __pycache__/
 *.session.json
 dist/
 .omc/
+_workspace/
 .claude-project/HANDOFF.md.prev*

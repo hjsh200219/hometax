@@ -12,6 +12,23 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .counterparty_changes import validate_text
 
 
+def issue_content(request: "InvoiceIssueRequest") -> dict:
+    """Canonical business input, excluding retry ID and Decimal formatting differences."""
+
+    def normalize(value):
+        if isinstance(value, Decimal):
+            return format(value.normalize(), "f")
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        return value
+
+    return normalize(request.model_dump(exclude={"client_reference"}))
+
+
 class InvoiceIssueLine(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     supply_date: date

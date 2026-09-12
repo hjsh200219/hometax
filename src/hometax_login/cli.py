@@ -12,6 +12,7 @@ import functools
 import getpass
 import json
 import os
+import re
 import sys
 import unicodedata
 import uuid
@@ -31,6 +32,7 @@ from .cert_discovery import (
 )
 from .certificates import CertificateError, load_certificate
 from .counterparty_changes import CounterpartyCreate, CounterpartyPatch
+from .counterparty_changes import fingerprint as content_fingerprint
 from .errors import LoginError
 from .financials import (
     BusinessAccountQuery,
@@ -44,6 +46,7 @@ from .issuance_models import (
     InvoiceCancelRequest,
     InvoiceCorrectionRequest,
     InvoiceIssueRequest,
+    issue_content,
 )
 from .local_session import (
     clear_session,
@@ -244,13 +247,63 @@ def today_kst() -> date:
     return datetime.now(SEOUL).date()
 
 
+def parse_cli_date(value: str, option: str) -> date:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise CommandError(f"{option} 날짜 형식은 YYYY-MM-DD 이어야 합니다: {value}")
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise CommandError(f"{option} 날짜 형식은 YYYY-MM-DD 이어야 합니다: {value}") from None
+
+
 def parse_range(args: argparse.Namespace) -> tuple[date, date]:
     today = today_kst()
     if getattr(args, "ytd", False):
         return date(today.year, 1, 1), today
     if not args.start or not args.end:
         raise CommandError("--from 과 --to 를 지정하거나 --ytd 를 쓰세요.")
-    return date.fromisoformat(args.start), date.fromisoformat(args.end)
+    start = parse_cli_date(args.start, "--from")
+    end = parse_cli_date(args.end, "--to")
+    if start > end:
+        raise CommandError("시작일은 종료일보다 늦을 수 없습니다.")
+    if end > today:
+        raise CommandError("미래 날짜는 조회할 수 없습니다.")
+    return start, end
+
+
+def validate_year(year: int) -> None:
+    if year > today_kst().year:
+        raise CommandError("미래 연도는 조회할 수 없습니다.")
+
+
+def validate_card_sales_args(args: argparse.Namespace) -> None:
+    validate_year(args.year)
+    if args.quarter_from > args.quarter_to:
+        raise CommandError("quarter-from 은 quarter-to 보다 클 수 없습니다.")
+
+
+def build_cash_sales_query(args: argparse.Namespace) -> YearQuery:
+    validate_year(args.year)
+    return YearQuery(year=args.year)
+
+
+def build_card_sales_query(args: argparse.Namespace) -> CardSalesQuery:
+    validate_card_sales_args(args)
+    return CardSalesQuery(
+        year=args.year,
+        quarter_from=args.quarter_from,
+        quarter_to=args.quarter_to,
+    )
+
+
+def add_json_option(target: argparse.ArgumentParser) -> None:
+    target.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
 
 
 # ------------------------------------------------------------------ 명령
@@ -553,9 +606,10 @@ async def cmd_cash_receipt_purchases(context: Context) -> int:
 
 
 async def cmd_cash_receipt_sales(context: Context) -> int:
+    query = build_cash_sales_query(context.args)
     client, _ = await session_client(context.args)
     try:
-        summary = await client.financials.cash_receipt_sales(YearQuery(year=context.args.year))
+        summary = await client.financials.cash_receipt_sales(query)
     finally:
         await client.close()
     payload = summary.model_dump(mode="json")
@@ -574,15 +628,10 @@ async def cmd_cash_receipt_sales(context: Context) -> int:
 
 async def cmd_card_sales(context: Context) -> int:
     args = context.args
+    query = build_card_sales_query(args)
     client, _ = await session_client(args)
     try:
-        summary = await client.financials.card_sales(
-            CardSalesQuery(
-                year=args.year,
-                quarter_from=args.quarter_from,
-                quarter_to=args.quarter_to,
-            )
-        )
+        summary = await client.financials.card_sales(query)
     finally:
         await client.close()
     payload = summary.model_dump(mode="json")
@@ -741,6 +790,16 @@ async def counterparty_change(context: Context, action: str) -> int:
 async def invoice_operation(context: Context, action: str) -> int:
     args = context.args
     payload = load_payload(args)
+    if action == "issue" and "client_reference" not in payload:
+        # Same validated input yields the same reference across CLI restarts. Scope is also
+        # included by the server-side journal, so different issuers remain independent.
+        draft = InvoiceIssueRequest(client_reference=uuid.UUID(int=0), **payload)
+        payload["client_reference"] = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "hometax:invoice:issue:" + content_fingerprint(issue_content(draft)),
+            )
+        )
     if args.yes and not getattr(args, "wire", None):
         raise CommandError(
             "전송에는 --wire raw 또는 --wire base64 가 필요합니다(홈택스 전송 형식)."
@@ -753,11 +812,15 @@ async def invoice_operation(context: Context, action: str) -> int:
         if entry
         else None
     )
-    client, _ = await session_client(args)
+    # Cached cookies deliberately carry no trusted certificate binding. Authenticate once with
+    # the selected signing key before preview/submit; never trust a fingerprint from a file.
+    client = build_client() if args.yes else (await session_client(args))[0]
     try:
+        if args.yes:
+            identity = await client.login(material, getattr(args, "login_type", "04") or "04")
+            save_session(client, identity)
         operations = client.invoice_operations
         if action == "issue":
-            payload.setdefault("client_reference", str(uuid.uuid4()))
             preview = await operations.preview_issue(InvoiceIssueRequest(**payload))
         elif action == "correct":
             payload.setdefault("client_reference", str(uuid.uuid4()))
@@ -946,6 +1009,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_cert_options(cancel)
     cancel.set_defaults(handler=functools.partial(invoice_operation, action="cancel"))
 
+    for command in sub.choices.values():
+        add_json_option(command)
     return parser
 
 

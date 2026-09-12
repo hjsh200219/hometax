@@ -15,6 +15,38 @@ PAYLOAD_A = "1" * 64
 PAYLOAD_B = "2" * 64
 
 
+def test_content_guard_blocks_different_reference_atomically(tmp_path):
+    path = db_path(tmp_path)
+    common = "c" * 64
+
+    def begin(plan, target):
+        try:
+            return WriteJournal(path).begin(plan, target, PAYLOAD_A, guard_keys=(common,))
+        except LoginError as error:
+            return error.code
+
+    WriteJournal(path)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(begin, PLAN_A, TARGET_A)
+        b = pool.submit(begin, PLAN_B, TARGET_B)
+        assert sorted([a.result(), b.result()]) == ["WRITE_OUTCOME_UNKNOWN", "started"]
+
+
+def test_v1_migration_preserves_unknown_and_blocks_new_content_guard(tmp_path):
+    path = db_path(tmp_path)
+    journal = WriteJournal(path)
+    journal.begin(PLAN_A, TARGET_A, PAYLOAD_A)
+    journal.finish(PLAN_A, "unknown")
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE write_guards")
+        conn.execute("PRAGMA user_version = 1")
+    migrated = WriteJournal(path)
+    with pytest.raises(LoginError) as caught:
+        migrated.begin(PLAN_B, TARGET_B, PAYLOAD_B, guard_keys=("c" * 64,))
+    assert caught.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert status_of(path, PLAN_A) == "unknown"
+
+
 def db_path(tmp_path):
     return tmp_path / "journal" / "write-attempts.sqlite3"
 

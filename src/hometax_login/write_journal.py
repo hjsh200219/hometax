@@ -12,7 +12,7 @@ from .errors import LoginError
 WriteStatus = Literal["in_flight", "unknown", "complete", "rejected"]
 FinishStatus = Literal["unknown", "complete", "rejected"]
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _PLAN_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{16,100}$")
 
@@ -33,10 +33,13 @@ class WriteJournal:
         payload_hash: str,
         *,
         unique_target: bool = False,
+        guard_keys: tuple[str, ...] = (),
     ) -> Literal["started", "complete"]:
         self._validate_plan_id(plan_id)
         self._validate_hash("target_key", target_key)
         self._validate_hash("payload_hash", payload_hash)
+        for guard in guard_keys:
+            self._validate_hash("guard_key", guard)
 
         def run(conn: sqlite3.Connection) -> Literal["started", "complete"]:
             conn.execute("BEGIN IMMEDIATE")
@@ -69,6 +72,29 @@ class WriteJournal:
                     "거절된 쓰기 작업은 재시도할 수 없습니다.",
                     409,
                 )
+
+            if guard_keys:
+                # Old journals do not contain content hashes. Never guess that an unresolved
+                # legacy dispatch is unrelated: its outcome must be reconciled before issuing.
+                legacy = conn.execute(
+                    """SELECT 1 FROM write_attempts a
+                       WHERE status IN ('in_flight', 'unknown')
+                       AND NOT EXISTS (SELECT 1 FROM write_guards g WHERE g.plan_id = a.plan_id)
+                       LIMIT 1"""
+                ).fetchone()
+                placeholders = ",".join("?" for _ in guard_keys)
+                guarded = conn.execute(
+                    f"""SELECT 1 FROM write_guards g JOIN write_attempts a USING(plan_id)
+                        WHERE g.guard_key IN ({placeholders})
+                        AND a.status IN ('in_flight', 'unknown') LIMIT 1""",
+                    guard_keys,
+                ).fetchone()
+                if legacy or guarded:
+                    raise LoginError(
+                        "WRITE_OUTCOME_UNKNOWN",
+                        "미확정 쓰기 기록이 있습니다. 기존 발행 결과를 먼저 확인하세요.",
+                        409,
+                    )
 
             blocking = conn.execute(
                 """
@@ -113,6 +139,10 @@ class WriteJournal:
                 VALUES (?, ?, ?, 'in_flight')
                 """,
                 (plan_id, target_key, payload_hash),
+            )
+            conn.executemany(
+                "INSERT INTO write_guards (plan_id, guard_key) VALUES (?, ?)",
+                [(plan_id, key) for key in dict.fromkeys((target_key, *guard_keys))],
             )
             return "started"
 
@@ -237,6 +267,13 @@ class WriteJournal:
             """
         ).fetchone()
         if has_table:
+            if conn.execute("PRAGMA user_version").fetchone()[0] == 1:
+                # Validate the known old table before an additive, atomic migration.
+                self._check_attempt_columns(conn)
+                conn.execute("BEGIN IMMEDIATE")
+                if conn.execute("PRAGMA user_version").fetchone()[0] == 1:
+                    self._create_guards(conn)
+                    conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             self._check_schema(conn)
             return
         if not self._created:
@@ -264,6 +301,7 @@ class WriteJournal:
             WHERE status IN ('in_flight', 'unknown')
             """
         )
+        self._create_guards(conn)
         conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._check_schema(conn)
 
@@ -274,10 +312,25 @@ class WriteJournal:
 
     def _check_schema(self, conn: sqlite3.Connection) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
+        self._check_attempt_columns(conn)
+        guards = {row[1] for row in conn.execute("PRAGMA table_info(write_guards)")}
+        if version != _SCHEMA_VERSION or guards != {"plan_id", "guard_key"}:
+            raise self._unavailable()
+
+    @staticmethod
+    def _create_guards(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """CREATE TABLE write_guards (
+                plan_id TEXT NOT NULL REFERENCES write_attempts(plan_id),
+                guard_key TEXT NOT NULL, PRIMARY KEY (plan_id, guard_key))"""
+        )
+        conn.execute("CREATE INDEX write_guards_key_idx ON write_guards(guard_key)")
+
+    def _check_attempt_columns(self, conn: sqlite3.Connection) -> None:
         columns = conn.execute("PRAGMA table_info(write_attempts)").fetchall()
         names = {row[1] for row in columns}
         expected = {"plan_id", "target_key", "payload_hash", "status", "created_at", "updated_at"}
-        if version != _SCHEMA_VERSION or names != expected:
+        if names != expected:
             raise self._unavailable()
 
         bad_status = conn.execute(

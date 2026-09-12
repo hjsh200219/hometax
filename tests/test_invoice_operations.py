@@ -34,6 +34,27 @@ APPROVAL_A = "20250103ABCDEFGH1234567Z"
 APPROVAL_B = "20250104ABCDEFGH1234567Z"
 
 
+@pytest.mark.asyncio
+async def test_unknown_same_invoice_blocks_new_reference_after_restart(tmp_path):
+    material = certificate_material()
+    backend = FakeBackend()
+    backend.issue_mode = "backend_error"
+    ops = manager(FakeClient(material), backend)
+    first = await ops.preview_issue(issue_request(REFERENCE_A))
+    path = journal_path(tmp_path)
+    with pytest.raises(LoginError, match="발행 결과"):
+        await ops.submit(first.operation_id, material, WriteJournal(path), first.content_digest)
+    backend.issue_mode = None
+    restarted = manager(FakeClient(material), backend)
+    second = await restarted.preview_issue(issue_request(REFERENCE_B))
+    with pytest.raises(LoginError) as caught:
+        await restarted.submit(
+            second.operation_id, material, WriteJournal(path), second.content_digest
+        )
+    assert caught.value.code == "WRITE_OUTCOME_UNKNOWN"
+    assert len(backend.issue_calls) == 1
+
+
 class FakeClock:
     def __init__(self, now=1_735_689_600.0):
         self.now = now

@@ -226,6 +226,141 @@ def test_main_returns_two_on_a_usage_error(npki, capsys):
 
 
 @pytest.mark.parametrize(
+    "argv,message",
+    [
+        (
+            ["invoices", "--from", "2026-02-30", "--to", "2026-03-01"],
+            "날짜 형식",
+        ),
+        (
+            ["invoices", "--from", "2026-03-02", "--to", "2026-03-01"],
+            "시작일",
+        ),
+        (
+            ["cards", "--from", "2026-03-02", "--to", "2026-03-01"],
+            "시작일",
+        ),
+        (
+            ["cash-purchases", "--from", "2026-03-02", "--to", "2026-03-01"],
+            "시작일",
+        ),
+    ],
+)
+def test_date_query_commands_reject_bad_dates_before_session(
+    npki, monkeypatch, capsys, argv, message
+):
+    async def unexpected_session(args):
+        raise AssertionError("session_client must not run for invalid input")
+
+    monkeypatch.setattr(cli, "session_client", unexpected_session)
+
+    assert cli.main(argv) == 2
+
+    captured = capsys.readouterr()
+    assert message in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_date_query_commands_reject_future_dates_before_session(npki, monkeypatch, capsys):
+    tomorrow = cli.today_kst() + timedelta(days=1)
+
+    async def unexpected_session(args):
+        raise AssertionError("session_client must not run for invalid input")
+
+    monkeypatch.setattr(cli, "session_client", unexpected_session)
+
+    assert (
+        cli.main(
+            [
+                "summary",
+                "--from",
+                cli.today_kst().isoformat(),
+                "--to",
+                tomorrow.isoformat(),
+            ]
+        )
+        == 2
+    )
+
+    captured = capsys.readouterr()
+    assert "미래" in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv,message",
+    [
+        (["cash-sales", "--year", str(cli.today_kst().year + 1)], "미래"),
+        (
+            [
+                "card-sales",
+                "--year",
+                str(cli.today_kst().year),
+                "--quarter-from",
+                "4",
+                "--quarter-to",
+                "1",
+            ],
+            "quarter-from",
+        ),
+    ],
+)
+def test_year_query_commands_validate_before_session(npki, monkeypatch, capsys, argv, message):
+    async def unexpected_session(args):
+        raise AssertionError("session_client must not run for invalid input")
+
+    monkeypatch.setattr(cli, "session_client", unexpected_session)
+
+    assert cli.main(argv) == 2
+
+    captured = capsys.readouterr()
+    assert message in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_json_option_is_accepted_before_and_after_the_subcommand(npki, monkeypatch, capsys):
+    calls = []
+
+    class FakeInvoices:
+        async def summary(self, filters: InvoiceFilters):
+            calls.append((filters.start_date, filters.end_date))
+            return TaxInvoiceSummary(
+                company_name="예시컨설팅",
+                filters=filters,
+                total_count=1,
+                supply_amount=1_000,
+                tax_amount=100,
+                total_amount=1_100,
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.invoices = FakeInvoices()
+
+        async def close(self):
+            calls.append("closed")
+
+    async def fake_session(args):
+        return FakeClient(), {"user_name": "예시컨설팅"}
+
+    monkeypatch.setattr(cli, "session_client", fake_session)
+
+    for argv in (
+        ["--json", "summary", "--from", "2026-09-01", "--to", "2026-09-12"],
+        ["summary", "--from", "2026-09-01", "--to", "2026-09-12", "--json"],
+    ):
+        assert cli.main(argv) == 0
+        assert json.loads(capsys.readouterr().out)["count"] == 1
+
+    assert calls == [
+        (date(2026, 9, 1), date(2026, 9, 12)),
+        "closed",
+        (date(2026, 9, 1), date(2026, 9, 12)),
+        "closed",
+    ]
+
+
+@pytest.mark.parametrize(
     "argv,command",
     [
         (["cards", "--from", "2026-09-01", "--to", "2026-09-12"], "cards"),

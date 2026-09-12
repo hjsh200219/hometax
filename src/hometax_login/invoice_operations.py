@@ -21,6 +21,7 @@ from .issuance_models import (
     InvoiceOperationPreview,
     InvoiceOperationResult,
     PreparedInvoiceOperation,
+    issue_content,
 )
 
 
@@ -120,7 +121,21 @@ class InvoiceOperations:
                 "INVOICE_SIGNING_PROFILE_REQUIRED", "검증할 XML 서명 전송 프로필을 설정하세요.", 503
             )
         state = journal.begin(
-            operation_id, plan.target_key, plan.preview.content_digest, unique_target=True
+            operation_id,
+            plan.target_key,
+            plan.preview.content_digest,
+            unique_target=True,
+            guard_keys=(
+                fingerprint(
+                    [
+                        plan.prepared.scope,
+                        "invoice-issue-content",
+                        issue_content(plan.prepared.request),
+                    ]
+                ),
+            )
+            if plan.prepared.operation == "issue"
+            else (),
         )
         if state == "complete":
             if plan.result is None:

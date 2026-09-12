@@ -5,7 +5,7 @@ description = "HomeTax tax invoice, card, cash-receipt, and business-account CLI
 requires-python = ">=3.12"
 dependencies = [
   "asn1crypto>=1.5.1,<2",
-  "cryptography>=45,<49",
+  "cryptography>=50,<51",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "lxml>=6,<7",
