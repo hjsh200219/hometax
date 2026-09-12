@@ -1,8 +1,8 @@
 # hometax
 
-파일 기반 공동인증서(NPKI)로 홈택스에 로그인해 **전자세금계산서 매출·매입 조회와 등록 거래처
-관리**를 하는 도구입니다. 명령줄 도구(`hometax`), Python 라이브러리, 로컬 HTTP API 세 가지
-경로를 제공하며 셋 다 같은 구현을 씁니다.
+파일 기반 공동인증서(NPKI)로 홈택스에 로그인해 **전자세금계산서, 사업용카드, 카드매출,
+현금영수증, 사업용계좌와 등록 거래처**를 조회·관리하는 도구입니다. 명령줄 도구(`hometax`),
+Python 라이브러리, 로컬 HTTP API 세 가지 경로를 제공하며 셋 다 같은 구현을 씁니다.
 
 > **공식 API가 아닙니다.** 국세청이 제공하는 개발자 API가 아니라 홈택스 웹 화면이 쓰는 내부
 > 요청을 재현한 것입니다. 포털 규격이 바뀌면 응답 검증에서 멈춥니다. 본인 인증서와 본인
@@ -14,6 +14,7 @@
 |---|---|
 | NPKI 디스크 인증서(`04`) 로그인 | 실계정 확인(2026-09-11) |
 | 매출·매입 목록·합계·상세, 거래처 조회 | 실계정 확인(2026-09-12, 매출 17건·매입 38건) |
+| 사업용카드·카드매출·현금영수증·사업용계좌 조회 | 승인된 본인 계정으로 응답 계약 확인(2026-09-12) |
 | 거래처 등록·수정·삭제 | 미리보기만 실계정 확인. 실제 반영은 미검증 |
 | 발행·정정·취소 | 모의 HTTP와 실제 XML 서명까지만. **실제 전송 호환성 미검증** |
 | 플랫폼 | macOS Apple Silicon에서 검증. 그 외는 미검증 |
@@ -45,6 +46,12 @@ hometax summary --ytd                      # 올해 매출 합계
 hometax summary --ytd --direction purchases
 hometax invoices --from 2026-07-01 --to 2026-09-12 --json
 hometax counterparties --name 휴맥스
+hometax cards --ytd --deduction deductible
+hometax registered-cards
+hometax card-sales --year 2026 --quarter-from 1 --quarter-to 3
+hometax cash-purchases --from 2026-07-01 --to 2026-09-12
+hometax cash-sales --year 2026
+hometax business-accounts
 hometax status / hometax logout
 ```
 
@@ -59,6 +66,27 @@ hometax status / hometax logout
 - 고른 인증서는 `~/.hometax/config.toml`(0600)에 **경로와 지문**으로 기억합니다. 같은 경로의
   인증서가 갱신되면 지문이 달라 다시 묻습니다. `--choose`로 언제든 다시 고릅니다.
 - 비밀번호는 저장하지 않고 명령 인자로도 받지 않습니다. `HOMETAX_PW` 또는 프롬프트뿐입니다.
+
+## 0.6.0 금융자료 조회
+
+공동인증서로 로그인한 본인 사업자의 금융 증빙자료를 읽기 전용으로 조회합니다.
+
+| CLI | 조회 자료 | 주요 결과 |
+|---|---|---|
+| `hometax registered-cards` | 홈택스에 등록한 사업용 신용카드 | 카드 구분·마스킹 번호·신청일·처리상태 |
+| `hometax cards --ytd` | 올해 사업용카드 매입내역 | 거래일·가맹점·공제 분류·공급가액·세액·합계 |
+| `hometax card-sales --year 2026` | 신용카드 매출 월별 합계 | 건수·신용카드·직불카드·기타 매출액 |
+| `hometax cash-purchases --ytd` | 현금영수증 매입 공제내역 | 공제·불공제 금액과 가맹점별 합계 |
+| `hometax cash-sales --year 2026` | 홈택스 발급 현금영수증 매출 | 월별 건수·공급가액·세액·합계 |
+| `hometax business-accounts` | 홈택스에 신고한 사업용계좌 | 은행·마스킹 계좌번호·신고일·상태 |
+
+`--ytd`는 한국 시간 기준 올해 1월 1일부터 오늘까지 조회합니다. `cards`는 개인카드 전체
+이용내역이 아니라 홈택스에 등록되고 카드사가 국세청에 제출한 **사업용카드 매입자료**입니다.
+`registered-cards`가 0장이면 `cards` 결과도 0건일 수 있습니다. 카드사 제출 시점에 따라 최근
+자료가 늦게 반영될 수도 있습니다.
+
+`business-accounts`는 신고된 계좌의 등록 정보만 반환하며 입출금 거래내역은 포함하지 않습니다.
+상세한 매개변수와 API 응답은 [카드·현금영수증·사업용계좌 조회](docs/FINANCIALS.md)를 보세요.
 
 ## 쓰기 — 미리보기가 기본입니다
 
@@ -130,12 +158,20 @@ CLI에는 이 환경변수 게이트가 없고 `--yes`가 그 역할을 합니�
 | POST | `/v1/certificates/validate` | 파일·암호·유효기간·키 일치 검사 |
 | POST · GET · DELETE | `/v1/hometax/sessions[/{id}]` | 로그인·상태 확인·세션 폐기 |
 | GET | `.../tax-invoices`, `/summary`, `/{승인번호}` | 목록·기간 합계·상세 |
+| GET | `.../business-card-purchases`, `.../card-sales` | 사업용카드 매입·신용카드 매출 합계 |
+| GET | `.../registered-business-cards` | 등록된 사업용카드와 처리상태 |
+| GET | `.../cash-receipt-purchases`, `.../cash-receipt-sales` | 현금영수증 매입·매출 합계 |
+| GET | `.../business-accounts` | 홈택스에 신고된 사업용계좌 목록 |
 | GET · POST · PATCH · DELETE | `.../counterparties[/{사업자번호}]` | 거래처 조회와 변경 미리보기 |
 | POST | `.../tax-invoices/drafts`, `/{승인번호}/corrections`, `/cancellations` | 발행·정정·취소 미리보기 |
 | POST | `.../counterparty-changes/{id}/apply`, `.../tax-invoice-operations/{id}/submit` | 확인 후 전송 |
 
-상세: [조회](docs/INVOICES.md) · [거래처](docs/COUNTERPARTIES.md) · [발행](docs/ISSUANCE.md) ·
-[프로토콜 근거](docs/PROTOCOL.md).
+상세: [세금계산서 조회](docs/INVOICES.md) · [카드·현금영수증·계좌](docs/FINANCIALS.md) ·
+[거래처](docs/COUNTERPARTIES.md) · [발행](docs/ISSUANCE.md) · [프로토콜 근거](docs/PROTOCOL.md).
+
+일반 은행 계좌의 입출금 거래내역은 홈택스가 제공하지 않아 지원하지 않습니다. 카드매출 자료에도
+판매·결제대행사 경유분이 제외될 수 있으므로 PG 정산자료는 별도 연동해야 합니다. `cash-sales`는
+홈택스 발급 시스템을 통한 현금영수증의 월별 현황입니다.
 
 ## 지원하는 인증서
 

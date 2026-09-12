@@ -13,6 +13,7 @@ from cryptography.x509.oid import NameOID
 
 from hometax_login import cli
 from hometax_login.cert_discovery import discover, load_selection, save_selection
+from hometax_login.financials import AmountBreakdown, CashReceiptPurchasePage
 from hometax_login.invoices import InvoiceFilters, TaxInvoiceSummary
 
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -222,3 +223,87 @@ def test_summary_splits_the_period_and_totals_every_span(npki, monkeypatch, caps
 def test_main_returns_two_on_a_usage_error(npki, capsys):
     assert cli.main(["invoices"]) == 2
     assert "--from" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv,command",
+    [
+        (["cards", "--from", "2026-09-01", "--to", "2026-09-12"], "cards"),
+        (["registered-cards"], "registered-cards"),
+        (["cash-purchases", "--ytd"], "cash-purchases"),
+        (["cash-sales", "--year", "2026"], "cash-sales"),
+        (
+            ["card-sales", "--year", "2026", "--quarter-from", "1", "--quarter-to", "3"],
+            "card-sales",
+        ),
+        (["business-accounts"], "business-accounts"),
+    ],
+)
+def test_financial_commands_are_registered(argv, command):
+    args = parse(argv)
+
+    assert args.command == command
+    assert callable(args.handler)
+
+
+def test_cash_purchase_cli_does_not_repeat_period_totals_for_every_page(npki, monkeypatch, capsys):
+    calls = []
+    totals = AmountBreakdown(
+        count=2,
+        supply_amount=1000,
+        tax_amount=100,
+        tax_exempt_amount=0,
+        total_amount=1100,
+    )
+    empty = AmountBreakdown(
+        count=0,
+        supply_amount=0,
+        tax_amount=0,
+        tax_exempt_amount=0,
+        total_amount=0,
+    )
+
+    class FakeFinancials:
+        async def cash_receipt_purchases(self, query):
+            calls.append(query.page)
+            return CashReceiptPurchasePage(
+                company_name="예시컨설팅",
+                query=query,
+                page=query.page,
+                page_size=query.page_size,
+                total_count=51,
+                has_next=query.page == 1,
+                eligible_total=totals,
+                deductible=totals,
+                optional_non_deductible=empty,
+                mandatory_non_deductible=empty,
+                items=[],
+            )
+
+    class FakeClient:
+        financials = FakeFinancials()
+
+        async def close(self):
+            calls.append("closed")
+
+    async def fake_session(args):
+        return FakeClient(), {"user_name": "예시컨설팅"}
+
+    monkeypatch.setattr(cli, "session_client", fake_session)
+
+    exit_code = cli.main(
+        [
+            "--json",
+            "cash-purchases",
+            "--from",
+            "2026-09-01",
+            "--to",
+            "2026-09-12",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert calls == [1, 2, "closed"]
+    assert payload["eligible_total"]["count"] == 2
+    assert payload["eligible_total"]["total_amount"] == 1100

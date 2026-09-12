@@ -1,6 +1,6 @@
 ---
 name: hometax
-description: 홈택스 전자세금계산서를 공동인증서로 조회·발행한다. 트리거 — "/hometax", "세금계산서 조회", "매출 세금계산서", "매입 세금계산서", "부가세 자료", "거래처 등록", "세금계산서 발행", "세금계산서 정정", "세금계산서 취소", "홈택스 로그인". 조회는 바로, 쓰기는 미리보기 뒤 사용자 확인을 받고 실행한다.
+description: 홈택스 전자세금계산서·사업용카드·카드매출·현금영수증·사업용계좌를 공동인증서로 조회하고 세금계산서를 발행한다. 트리거 — "/hometax", "세금계산서 조회", "매출 세금계산서", "매입 세금계산서", "사업용카드", "카드 매출", "현금영수증", "사업용계좌", "부가세 자료", "거래처 등록", "세금계산서 발행", "세금계산서 정정", "세금계산서 취소", "홈택스 로그인". 조회는 바로, 쓰기는 미리보기 뒤 사용자 확인을 받고 실행한다.
 argument-hint: "[조회 요청 또는 발행 요청]"
 ---
 
@@ -31,12 +31,19 @@ hometax summary --ytd                           # 올해 매출 합계
 hometax summary --ytd --direction purchases     # 매입
 hometax invoices --from 2026-07-01 --to 2026-09-12 --json
 hometax counterparties --name 휴맥스
+hometax cards --ytd --deduction deductible
+hometax registered-cards
+hometax card-sales --year 2026 --quarter-from 1 --quarter-to 3
+hometax cash-purchases --from 2026-07-01 --to 2026-09-12
+hometax cash-sales --year 2026
+hometax business-accounts
 hometax status / hometax logout
 ```
 
 - 홈택스는 한 번에 3개월까지만 조회한다. `--ytd`나 긴 기간은 자동으로 나눠 부르고 합산한다.
 - `--basis issued|written|transmitted`로 기준일을 바꾼다(기본 발급일).
 - `--json`을 붙이면 집계·가공용 출력이 된다.
+- 일반 은행 입출금 거래내역과 PG 경유 카드매출은 홈택스 조회 범위 밖이므로 별도 연동한다.
 
 ## 쓰기 — 반드시 두 단계
 

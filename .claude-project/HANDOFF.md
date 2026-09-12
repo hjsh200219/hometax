@@ -1,37 +1,32 @@
 ---
-created: 2026-09-12T11:45:00+09:00
+created: 2026-09-12T14:41:18+09:00
 project: hometax
-summary: CLI와 Claude Code 플러그인으로 배포 형태를 갖추고 히스토리 세탁 후 저장소를 공개했습니다.
+summary: 0.6.0에서 사업용카드·카드매출·현금영수증·사업용계좌 읽기 조회를 CLI와 HTTP API에 추가
 ---
 
 ## Session Digest
 
-조회를 할 때마다 로컬 HTTP 서버를 띄워야 하던 것을 없앴습니다. `hometax` 명령줄 도구를 만들고
-인증서 선택·세션 캐시·쓰기 명령을 붙인 뒤 Claude Code 플러그인으로 포장했습니다. 진행 중
-실계정 조회에서 매입 목록이 전부 502로 실패하는 결함을 찾아 고쳤고, 공개 전환을 앞두고
-히스토리 보안 감사를 돌려 실명 픽스처와 사내 저장소 참조를 정리했습니다.
+홈택스가 제공하는 카드·현금영수증·계좌 관련 읽기 기능을 공개 모바일 화면 계약에서 발굴하고 기존 공동인증서 세션에 연결했다. 포털 SSO 토큰을 고정된 `mob.tbcr`·`mob.tbht` 업무 도메인으로 전달한 뒤 읽기 action만 호출한다.
+
+0.6.0은 등록된 사업용 신용카드와 처리상태, 사업용카드 매입내역, 신용카드 매출 월별 합계, 현금영수증 매입 공제합계, 홈택스 발급 현금영수증 매출 월별 합계, 신고된 사업용계좌 목록을 CLI와 HTTP API로 제공한다. 일반 은행 입출금 거래내역과 PG 경유 카드매출은 홈택스 자료에 없거나 제외되므로 지원하지 않는다.
 
 ## Progress
 
-- 완료: 매입 목록 파서 수정. 홈택스가 일부 행의 `tnmNm`을 공백으로 보내 페이지 전체가
-  `INVOICE_RESPONSE_CHANGED`로 죽던 것을 `counterparty_name` nullable로 해결.
-- 완료: 시각 의존 테스트 정리. 미래 날짜 리터럴 제거와 가려진 422 단언 보강.
-- 완료: 인증서 탐색·선택 기억 모듈. 만료 제외, 여러 개면 질문, 경로+지문 저장.
-- 완료: CLI 신설과 쓰기 명령. 조회 6종 + 쓰기 6종, 전역 `--json`.
-- 완료: 플러그인 포장. `.claude-plugin/`, `skills/hometax/SKILL.md`, LICENSE, README 재작성.
-- 완료: 공개 전 정리. 테스트 픽스처 실명 → 합성, `docs/PROTOCOL.md` 사내 참조 축약.
-- 완료: 로컬 플러그인 설치 검증(`claude plugin details hometax` → 스킬 1개).
-- 완료: 히스토리 세탁과 공개 전환. `filter-repo`로 14커밋을 치환한 뒤, force-push만으로는 옛 객체가
-  GitHub API에 그대로 남는 것을 실측하고(옛 SHA가 200 응답) 저장소를 삭제·재생성해 재작성본만 push.
-  옛 SHA 404 확인 후 public 전환. 공개본을 새로 clone해 실명·사내 참조·시크릿 0건 재확인.
-- 완료: 타인 설치 경로 검증. 로컬 마켓플레이스를 지우고 `hjsh200219/hometax`에서 재설치해 스킬 1개 확인.
-- 미완료: 발행·정정·취소의 실제 홈택스 전송. 한 건도 보낸 적이 없습니다.
+- [x] `FinancialDataClient`와 6종 응답 모델·검증·마스킹 구현
+- [x] CLI: `registered-cards`, `cards`, `card-sales`, `cash-purchases`, `cash-sales`, `business-accounts`
+- [x] HTTP API: `/registered-business-cards`, `/business-card-purchases`, `/card-sales`, `/cash-receipt-purchases`, `/cash-receipt-sales`, `/business-accounts`
+- [x] 사업용카드·현금영수증 3개월 제한과 CLI 장기기간 자동 분할
+- [x] 카드번호·계좌번호 마스킹, 고정 action만 허용, 토큰·쿠키·원문 미노출
+- [x] 승인된 본인 계정으로 6개 읽기 action과 실제 CLI 종단간 검증
+- [x] 합성 단위·API·CLI 테스트 포함 전체 320개 통과
+- [x] Ruff lint·format, compileall, 0.6.0 wheel/sdist, Claude 플러그인 검증 통과
+- [ ] 원격 push — 사용자 승인 전 로컬 커밋만 유지
 
 ## Next Steps
 
-1. 발행 실전송을 검증한다면 본인 계정에서 소액 1건으로 합니다. `--wire` 형식을 먼저 확정해야 합니다.
-2. HTTP 계층 제거 판단. CLI가 17개 엔드포인트를 덮었는지, 소유자 검사·세션 TTL·요청 직렬화·
-   오류 새니타이즈를 어디에 둘지 정한 뒤에 결정합니다.
+1. 사용자가 push를 지시하면 0.6.0 커밋을 `origin/main`에 푸시한다.
+2. PG 정산은 각 결제대행사 API 또는 파일을 별도로 연결한다.
+3. 은행 입출금은 은행 API·오픈뱅킹·CSV 수입 중 하나로 별도 모듈화한다.
 
 ## Blockers
 
@@ -39,25 +34,28 @@ summary: CLI와 Claude Code 플러그인으로 배포 형태를 갖추고 히스
 
 ## Watch Out
 
-- **2026-09-12 히스토리 세탁으로 그 이전 커밋 SHA가 전부 바뀌었습니다.** 다른 문서나 메모에 적힌
-  세탁 이전 SHA는 더 이상 존재하지 않습니다. 재작성 전 백업은 `/tmp/hometax-backup-20260912.bundle`.
-- **저장소가 public입니다.** 테스트 픽스처·문서·인계서에 실명, 실제 사업자번호, 실제 거래처명,
-  사내 저장소·이슈 키를 넣지 마세요.
-
-- **미리보기와 전송은 같은 실행 안에 있어야 합니다.** preview id는 프로세스 메모리에만 있어
-  다음 실행에서 못 씁니다. `--yes`는 "미리보기 후 바로 전송"을 뜻합니다.
-- 발행 전송에는 `client.invoice_wire_encoding`(CLI `--wire`)이 필요합니다. 없으면 전송 단계에서 멈춥니다.
-- macOS는 파일명을 NFD로 저장하고 셸 인자는 NFC로 들어옵니다. 한글 경로는 문자열이 아니라
-  `os.path.samefile`로 비교해야 합니다. APFS는 준 그대로 저장하므로 테스트는 NFD로 만들어야
-  재현됩니다.
-- 인증서 기억은 경로만으로 부족합니다. 갱신하면 같은 경로에 다른 인증서가 들어오므로 지문을 함께 봅니다.
-- CLI는 세션 쿠키를 `~/.hometax/session.json`(0600)에 저장합니다. HTTP API 경로는 여전히 메모리만 씁니다.
-- 쓰기 저널(`~/.hometax/writes.sqlite3`)이 미확정 작업을 막습니다. 지워서 우회하지 말고 홈택스에서
-  실제 반영 여부를 먼저 확인합니다.
+- 홈택스 공식 개발자 API가 아니라 공개 웹 클라이언트의 고정 요청을 재현한다. 화면 계약 변경 시 추측하지 않고 `FINANCIAL_RESPONSE_CHANGED`로 멈춘다.
+- 사업용카드 자료는 카드사 제출 지연으로 직전 월 자료가 늦게 나타날 수 있다.
+- `card-sales`의 홈택스 자료에는 판매·결제대행사 경유분이 제외될 수 있다.
+- `cash-sales`는 홈택스 발급 시스템을 통한 현금영수증 월별 현황이다.
+- `business-accounts`는 신고된 계좌 메타데이터만 반환하며 은행 입출금은 제공하지 않는다.
+- 저장소는 public이다. 실제 상호·사업자번호·카드·계좌·금액을 테스트나 문서에 넣지 않는다.
+- 발행·정정·취소의 실제 홈택스 전송 호환성은 여전히 미검증이다.
 
 ## Files Touched
 
-- `src/hometax_login/cli.py`, `cert_discovery.py`, `local_session.py`, `invoices.py`
-- `tests/test_cli.py`, `test_cert_discovery.py`, `test_local_session.py`, `test_invoices.py`, `test_invoice_api.py`
-- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `skills/hometax/SKILL.md`
-- `README.md`, `LICENSE`, `docs/INVOICES.md`, `docs/PROTOCOL.md`, `pyproject.toml`
+- src/hometax_login/financials.py
+- src/hometax_login/protocol.py
+- src/hometax_login/api.py
+- src/hometax_login/cli.py
+- tests/test_financials.py
+- tests/test_financial_api.py
+- tests/test_cli.py
+- docs/FINANCIALS.md
+- docs/PROTOCOL.md
+- README.md
+- skills/hometax/SKILL.md
+- .claude-plugin/plugin.json
+- .claude-plugin/marketplace.json
+- pyproject.toml
+- uv.lock

@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.serialization import Encoding
 
 from .counterparty_changes import CounterpartyChangeManager
 from .errors import LoginError
+from .financials import FinancialDataClient
 from .invoice_operations import InvoiceOperations
 from .invoices import TaxInvoiceClient
 
@@ -54,6 +55,7 @@ class HometaxClient:
             },
         )
         self.invoices = TaxInvoiceClient(self)
+        self.financials = FinancialDataClient(self)
         self.counterparty_changes = CounterpartyChangeManager(self.invoices)
         self.signing_certificate_fingerprint: str | None = None
         self.invoice_wire_encoding: str | None = None

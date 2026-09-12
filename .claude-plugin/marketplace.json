@@ -9,7 +9,7 @@
     {
       "name": "hometax",
       "source": "./",
-      "description": "Query and manage Korean electronic tax invoices on HomeTax with a file-based NPKI certificate. Reads sales and purchase invoices, period totals, invoice detail and the registered counterparty book; writes (issue, correct, cancel, counterparty add/edit/delete) preview first and send only with an explicit --yes. Unofficial reproduction of the HomeTax web client's internal requests."
+      "description": "Query Korean electronic tax invoices, business cards, card sales, cash receipts, registered business accounts and counterparties with a file-based NPKI certificate. Writes preview first and send only with an explicit --yes. Unofficial reproduction of fixed HomeTax web-client requests."
     }
   ]
 }

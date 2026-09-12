@@ -32,6 +32,13 @@ from .cert_discovery import (
 from .certificates import CertificateError, load_certificate
 from .counterparty_changes import CounterpartyCreate, CounterpartyPatch
 from .errors import LoginError
+from .financials import (
+    BusinessAccountQuery,
+    BusinessCardQuery,
+    CardSalesQuery,
+    CashReceiptPurchaseQuery,
+    YearQuery,
+)
 from .invoices import CounterpartyQuery, InvoiceFilters, InvoiceQuery
 from .issuance_models import (
     InvoiceCancelRequest,
@@ -399,6 +406,202 @@ async def cmd_summary(context: Context) -> int:
     return 0
 
 
+async def cmd_business_cards(context: Context) -> int:
+    args = context.args
+    start, end = parse_range(args)
+    client, _ = await session_client(args)
+    items = []
+    try:
+        for span_start, span_end in split_periods(start, end):
+            page_number = 1
+            while True:
+                page = await client.financials.business_cards(
+                    BusinessCardQuery(
+                        start_date=span_start,
+                        end_date=span_end,
+                        deduction=args.deduction.replace("-", "_"),
+                        page=page_number,
+                        page_size=50,
+                    )
+                )
+                items.extend(page.items)
+                if not page.has_next:
+                    break
+                page_number += 1
+    finally:
+        await client.close()
+    payload = {
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "deduction": args.deduction,
+        "count": len(items),
+        "supply_amount": sum(item.supply_amount for item in items),
+        "tax_amount": sum(item.tax_amount for item in items),
+        "tax_exempt_amount": sum(item.tax_exempt_amount for item in items),
+        "total_amount": sum(item.total_amount for item in items),
+        "items": [item.model_dump(mode="json") for item in items],
+    }
+    lines = [
+        f"{item.transaction_date} {item.merchant_name or '(상호 없음)'} | "
+        f"{money(item.total_amount)} | {item.deduction_name or '미분류'}"
+        for item in items
+    ]
+    lines.append(
+        f"합계 {len(items)}건 공급가액 {money(payload['supply_amount'])} "
+        f"세액 {money(payload['tax_amount'])} 합계 {money(payload['total_amount'])}"
+    )
+    emit(context, payload, lines)
+    return 0
+
+
+async def cmd_registered_business_cards(context: Context) -> int:
+    client, _ = await session_client(context.args)
+    items, page_number = [], 1
+    try:
+        while True:
+            page = await client.financials.registered_business_cards(
+                BusinessAccountQuery(page=page_number, page_size=50)
+            )
+            items.extend(page.items)
+            if not page.has_next:
+                break
+            page_number += 1
+    finally:
+        await client.close()
+    payload = {"count": len(items), "items": [item.model_dump(mode="json") for item in items]}
+    lines = [
+        f"{item.card_type or '(카드구분 없음)'} {item.card_number or '(카드번호 없음)'} | "
+        f"{item.status or ''}"
+        for item in items
+    ]
+    lines.append(f"합계 {len(items)}장")
+    emit(context, payload, lines)
+    return 0
+
+
+async def cmd_cash_receipt_purchases(context: Context) -> int:
+    args = context.args
+    start, end = parse_range(args)
+    client, _ = await session_client(args)
+    items, pages = [], []
+    try:
+        for span_start, span_end in split_periods(start, end):
+            page_number = 1
+            while True:
+                page = await client.financials.cash_receipt_purchases(
+                    CashReceiptPurchaseQuery(
+                        start_date=span_start,
+                        end_date=span_end,
+                        deduction=args.deduction.replace("-", "_"),
+                        page=page_number,
+                        page_size=50,
+                    )
+                )
+                if page_number == 1:
+                    pages.append(page)
+                items.extend(page.items)
+                if not page.has_next:
+                    break
+                page_number += 1
+    finally:
+        await client.close()
+    payload = {
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "deduction": args.deduction,
+        "merchant_count": len(items),
+        "eligible_total": {
+            "count": sum(page.eligible_total.count for page in pages),
+            "supply_amount": sum(page.eligible_total.supply_amount for page in pages),
+            "tax_amount": sum(page.eligible_total.tax_amount for page in pages),
+            "tax_exempt_amount": sum(page.eligible_total.tax_exempt_amount for page in pages),
+            "total_amount": sum(page.eligible_total.total_amount for page in pages),
+        },
+        "items": [item.model_dump(mode="json") for item in items],
+    }
+    lines = [
+        f"{item.merchant_name or '(상호 없음)'} | {item.count}건 | {money(item.total_amount)}"
+        for item in items
+    ]
+    total = payload["eligible_total"]
+    lines.append(
+        f"공제대상 합계 {total['count']}건 공급가액 {money(total['supply_amount'])} "
+        f"세액 {money(total['tax_amount'])} 합계 {money(total['total_amount'])}"
+    )
+    emit(context, payload, lines)
+    return 0
+
+
+async def cmd_cash_receipt_sales(context: Context) -> int:
+    client, _ = await session_client(context.args)
+    try:
+        summary = await client.financials.cash_receipt_sales(YearQuery(year=context.args.year))
+    finally:
+        await client.close()
+    payload = summary.model_dump(mode="json")
+    lines = [
+        f"{item.month} {item.count}건 | 공급가액 {money(item.supply_amount)} | "
+        f"합계 {money(item.total_amount)}"
+        for item in summary.items
+    ]
+    lines.append(
+        f"합계 {summary.count}건 공급가액 {money(summary.supply_amount)} "
+        f"세액 {money(summary.tax_amount)} 합계 {money(summary.total_amount)}"
+    )
+    emit(context, payload, lines)
+    return 0
+
+
+async def cmd_card_sales(context: Context) -> int:
+    args = context.args
+    client, _ = await session_client(args)
+    try:
+        summary = await client.financials.card_sales(
+            CardSalesQuery(
+                year=args.year,
+                quarter_from=args.quarter_from,
+                quarter_to=args.quarter_to,
+            )
+        )
+    finally:
+        await client.close()
+    payload = summary.model_dump(mode="json")
+    lines = [
+        f"{item.month} {item.data_type or ''} | {item.count}건 | "
+        f"매출 {money(item.total_sales_amount)}"
+        for item in summary.items
+    ]
+    lines.append(
+        f"합계 {summary.count}건 매출 {money(summary.total_sales_amount)} "
+        f"신용카드 {money(summary.credit_card_amount)}"
+    )
+    emit(context, payload, lines)
+    return 0
+
+
+async def cmd_business_accounts(context: Context) -> int:
+    client, _ = await session_client(context.args)
+    items, page_number = [], 1
+    try:
+        while True:
+            page = await client.financials.business_accounts(
+                BusinessAccountQuery(page=page_number, page_size=50)
+            )
+            items.extend(page.items)
+            if not page.has_next:
+                break
+            page_number += 1
+    finally:
+        await client.close()
+    payload = {"count": len(items), "items": [item.model_dump(mode="json") for item in items]}
+    lines = [
+        f"{item.bank_name or '(은행 없음)'} {item.account_number or '(계좌 없음)'} | "
+        f"{item.account_type or ''} | {item.status or ''}"
+        for item in items
+    ]
+    lines.append(f"합계 {len(items)}개")
+    emit(context, payload, lines)
+    return 0
+
+
 async def cmd_counterparties(context: Context) -> int:
     args = context.args
     client, _ = await session_client(args)
@@ -599,6 +802,51 @@ def build_parser() -> argparse.ArgumentParser:
     summary = sub.add_parser("summary", help="기간 합계")
     add_period_options(summary)
     summary.set_defaults(handler=cmd_summary)
+
+    def add_financial_period_options(target):
+        target.add_argument("--from", dest="start", help="시작일 YYYY-MM-DD")
+        target.add_argument("--to", dest="end", help="종료일 YYYY-MM-DD")
+        target.add_argument("--ytd", action="store_true", help="올해 1월 1일부터 오늘까지")
+        target.add_argument(
+            "--deduction",
+            default="all",
+            choices=["all", "deductible", "non-deductible"],
+            help="공제 분류",
+        )
+        add_cert_options(target)
+
+    cards = sub.add_parser("cards", help="사업용 신용카드 매입내역")
+    add_financial_period_options(cards)
+    cards.set_defaults(handler=cmd_business_cards)
+
+    registered_cards = sub.add_parser("registered-cards", help="등록된 사업용 신용카드")
+    add_cert_options(registered_cards)
+    registered_cards.set_defaults(handler=cmd_registered_business_cards)
+
+    cash_purchases = sub.add_parser("cash-purchases", help="현금영수증 매입 공제내역")
+    add_financial_period_options(cash_purchases)
+    cash_purchases.set_defaults(handler=cmd_cash_receipt_purchases)
+
+    cash_sales = sub.add_parser("cash-sales", help="현금영수증 매출 월별 합계")
+    cash_sales.add_argument("--year", type=int, default=today_kst().year)
+    add_cert_options(cash_sales)
+    cash_sales.set_defaults(handler=cmd_cash_receipt_sales)
+
+    card_sales = sub.add_parser("card-sales", help="신용카드 매출 월별 합계")
+    card_sales.add_argument("--year", type=int, default=today_kst().year)
+    card_sales.add_argument("--quarter-from", type=int, default=1, choices=range(1, 5))
+    card_sales.add_argument(
+        "--quarter-to",
+        type=int,
+        default=(today_kst().month - 1) // 3 + 1,
+        choices=range(1, 5),
+    )
+    add_cert_options(card_sales)
+    card_sales.set_defaults(handler=cmd_card_sales)
+
+    business_accounts = sub.add_parser("business-accounts", help="사업용계좌 신고현황")
+    add_cert_options(business_accounts)
+    business_accounts.set_defaults(handler=cmd_business_accounts)
 
     counterparties = sub.add_parser("counterparties", help="등록 거래처 목록")
     counterparties.add_argument("--name", help="거래처명 검색")

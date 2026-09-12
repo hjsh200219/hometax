@@ -24,6 +24,19 @@ from .counterparty_changes import (
     CounterpartyPatch,
 )
 from .errors import LoginError
+from .financials import (
+    BusinessAccountPage,
+    BusinessAccountQuery,
+    BusinessCardPage,
+    BusinessCardQuery,
+    BusinessCardRegistrationPage,
+    CardSalesQuery,
+    CardSalesSummary,
+    CashReceiptPurchasePage,
+    CashReceiptPurchaseQuery,
+    CashReceiptSalesSummary,
+    YearQuery,
+)
 from .invoices import (
     CounterpartyPage,
     CounterpartyQuery,
@@ -194,7 +207,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await task
             await store.close()
 
-    app = FastAPI(title="HomeTax API", version="0.4.0", lifespan=lifespan)
+    app = FastAPI(title="HomeTax API", version="0.6.0", lifespan=lifespan)
     app.add_middleware(BodyLimit)
     app.state.client_factory = HometaxClient
     write_journal = (
@@ -332,6 +345,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except TimeoutError:
             raise LoginError("INVOICE_TIMEOUT", "홈택스 조회 시간이 초과됐습니다.", 504) from None
 
+    @asynccontextmanager
+    async def financial_service(session_id: str, owner: str):
+        try:
+            async with asyncio.timeout(60):
+                async with store.lease(session_id, owner) as item:
+                    yield item.client.financials
+        except TimeoutError:
+            raise LoginError(
+                "FINANCIAL_TIMEOUT", "홈택스 금융자료 조회 시간이 초과됐습니다.", 504
+            ) from None
+
     @app.get(
         "/v1/hometax/sessions/{session_id}/tax-invoices",
         response_model=TaxInvoicePage,
@@ -355,6 +379,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ):
         async with invoice_service(session_id, owner) as invoices:
             return await invoices.summary(filters)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/business-card-purchases",
+        response_model=BusinessCardPage,
+    )
+    async def business_card_purchases(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        query: Annotated[BusinessCardQuery, Query()],
+    ):
+        async with financial_service(session_id, owner) as financials:
+            return await financials.business_cards(query)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/registered-business-cards",
+        response_model=BusinessCardRegistrationPage,
+    )
+    async def registered_business_cards(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        query: Annotated[BusinessAccountQuery, Query()],
+    ):
+        async with financial_service(session_id, owner) as financials:
+            return await financials.registered_business_cards(query)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/cash-receipt-purchases",
+        response_model=CashReceiptPurchasePage,
+    )
+    async def cash_receipt_purchases(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        query: Annotated[CashReceiptPurchaseQuery, Query()],
+    ):
+        async with financial_service(session_id, owner) as financials:
+            return await financials.cash_receipt_purchases(query)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/cash-receipt-sales",
+        response_model=CashReceiptSalesSummary,
+    )
+    async def cash_receipt_sales(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        query: Annotated[YearQuery, Query()],
+    ):
+        async with financial_service(session_id, owner) as financials:
+            return await financials.cash_receipt_sales(query)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/card-sales",
+        response_model=CardSalesSummary,
+    )
+    async def card_sales(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        query: Annotated[CardSalesQuery, Query()],
+    ):
+        async with financial_service(session_id, owner) as financials:
+            return await financials.card_sales(query)
+
+    @app.get(
+        "/v1/hometax/sessions/{session_id}/business-accounts",
+        response_model=BusinessAccountPage,
+    )
+    async def business_accounts(
+        session_id: str,
+        owner: Annotated[str, Depends(authorize)],
+        query: Annotated[BusinessAccountQuery, Query()],
+    ):
+        async with financial_service(session_id, owner) as financials:
+            return await financials.business_accounts(query)
 
     @app.post(
         "/v1/hometax/sessions/{session_id}/tax-invoices/drafts",
