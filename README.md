@@ -90,6 +90,7 @@ from hometax_login.certificates import load_certificate
 from hometax_login.invoices import InvoiceQuery
 from hometax_login.protocol import HometaxClient
 
+
 async def main():
     entry = usable(discover())[0]
     material = load_certificate(
@@ -104,6 +105,7 @@ async def main():
         print(page.total_count)
     finally:
         await client.close()
+
 
 asyncio.run(main())
 ```

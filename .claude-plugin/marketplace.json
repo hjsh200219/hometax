@@ -1,5 +1,6 @@
 {
   "name": "hometax",
+  "description": "HomeTax electronic tax invoice CLI and Claude Code plugin marketplace.",
   "owner": {
     "name": "SH Consulting",
     "url": "https://github.com/hjsh200219"
