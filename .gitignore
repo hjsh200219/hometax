@@ -14,3 +14,4 @@ __pycache__/
 *.pem
 *.session.json
 dist/
+.omc/

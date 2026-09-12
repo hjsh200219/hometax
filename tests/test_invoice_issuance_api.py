@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -225,9 +226,10 @@ async def test_preview_issue_validates_input_dates():
         base_url="http://test",
         headers={"Authorization": f"Bearer {KEY_A}"},
     ) as c:
+        tomorrow = datetime.now(ZoneInfo("Asia/Seoul")).date() + timedelta(days=1)
         future = await c.post(
             f"/v1/hometax/sessions/{item.id}/tax-invoices/drafts",
-            json=issue_payload(written_date="2026-09-12"),
+            json=issue_payload(written_date=tomorrow.isoformat()),
         )
         mismatched_month = await c.post(
             f"/v1/hometax/sessions/{item.id}/tax-invoices/drafts",
