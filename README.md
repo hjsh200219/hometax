@@ -95,6 +95,29 @@ API 응답에는 불투명한 `session_id`, 만료시각, 최소 사용자 식�
 개인키·인증서 비밀번호·홈택스 쿠키는 반환하지 않습니다. 세션 기본 TTL은 10분이며,
 프로세스 재시작 시 모두 사라집니다. 현재 저장소는 프로세스 내부 메모리이므로 **단일 worker**로 실행합니다.
 
+## 명령줄 도구
+
+서버를 띄우지 않고 같은 기능을 쓰는 경로입니다.
+
+```bash
+uv run hometax certs                      # 인증서 목록(만료분 표시)
+uv run hometax login                      # 인증서 선택·로그인, 선택을 기억할지 물음
+uv run hometax summary --ytd              # 올해 매출 합계(3개월 제한 자동 분할)
+uv run hometax invoices --ytd --direction purchases --json
+uv run hometax counterparties --name 휴맥스
+uv run hometax status / logout
+```
+
+- 비밀번호는 인자로 받지 않습니다. `HOMETAX_PW` 또는 입력 프롬프트만 사용합니다.
+- 인증서는 `HOMETAX_NPKI_PATH`(없으면 `./NPKI`·`~/NPKI`·macOS 표준 경로·`/Volumes/*/NPKI`)에서
+  찾습니다. 만료된 인증서는 선택 후보에서 제외하고, 여러 개면 묻습니다. 대화형이 아니면
+  임의로 고르지 않고 `--cert` 를 요구합니다.
+- 선택은 `~/.hometax/config.toml`(0600)에 경로와 인증서 지문으로 기억합니다. 같은 경로의
+  인증서가 갱신되면 지문이 달라져 다시 묻습니다. `--choose` 로 언제든 다시 고릅니다.
+- **CLI 는 HTTP API 와 달리 세션 쿠키를 `~/.hometax/session.json`(0600)에 보관합니다.**
+  명령마다 재로그인하지 않기 위한 것이며 기본 10분 뒤 만료합니다. `hometax logout` 으로
+  지웁니다(홈택스 원격 로그아웃은 아닙니다). 서버 경로는 지금도 메모리만 씁니다.
+
 ## 실패 처리
 
 - 인증 실패나 보호 페이지를 자동으로 반복 요청하거나 우회하지 않습니다.
