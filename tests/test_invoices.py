@@ -444,6 +444,15 @@ async def test_page_accepts_normal_zero_result():
             lambda data, payload, page: {
                 **data,
                 "etxivIsnBrkdTermDVOList": [
+                    {**data["etxivIsnBrkdTermDVOList"][0], "tnmNm": {"nested": "상호"}}
+                ],
+            },
+            "INVOICE_RESPONSE_CHANGED",
+        ),
+        (
+            lambda data, payload, page: {
+                **data,
+                "etxivIsnBrkdTermDVOList": [
                     data["etxivIsnBrkdTermDVOList"][0],
                     data["etxivIsnBrkdTermDVOList"][0],
                 ],
@@ -464,6 +473,26 @@ async def test_page_rejects_changed_or_inconsistent_upstream_responses(mutate, e
     finally:
         await client.close()
     assert caught.value.code == error_code
+
+
+@pytest.mark.asyncio
+async def test_page_keeps_rows_whose_counterparty_name_is_blank():
+    # 홈택스 매입 목록은 일부 행의 tnmNm 을 공백으로 보낸다(대체 상호 필드도 비어 있다).
+    # 그 한 행 때문에 페이지 전체를 버리지 않는다.
+    rows = [row(APPROVAL_1, name=" "), row(APPROVAL_2)]
+    transport = InvoiceTransport(pages={1: (rows, 2)})
+    client = HometaxClient(transport=httpx.MockTransport(transport))
+    try:
+        page = await client.invoices.list(
+            InvoiceQuery(
+                start_date=date(2025, 1, 1), end_date=date(2025, 1, 31), direction="purchases"
+            )
+        )
+    finally:
+        await client.close()
+    assert [item.counterparty_name for item in page.items] == [None, "(주)예시거래처"]
+    assert page.total_count == 2
+    assert page.items[0].supply_amount == 1_000
 
 
 @pytest.mark.asyncio

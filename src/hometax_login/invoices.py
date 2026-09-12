@@ -62,7 +62,7 @@ class TaxInvoice(BaseModel):
     written_date: date
     issued_date: date
     transmitted_date: date | None
-    counterparty_name: str
+    counterparty_name: str | None
     item_name: str | None
     supply_amount: int
     tax_amount: int
@@ -177,8 +177,11 @@ def approval_number(value) -> str:
 def invoice_from_row(row: dict) -> TaxInvoice:
     approval = approval_number(row.get("etan"))
     name = row.get("tnmNm")
-    if not isinstance(name, str) or not name.strip():
+    if not isinstance(name, str):
         raise changed()
+    # 매입 목록은 일부 행의 상호를 공백으로 보내고 대체 상호 필드도 비워 둔다.
+    # 그 행 하나 때문에 페이지 전체를 버리지 않고, 상호만 비운 채로 통과시킨다.
+    name = name.strip() or None
     supply, tax, total = (integer(row.get(k)) for k in ("sumSplCft", "sumTxamt", "totaAmt"))
     if supply + tax != total:
         raise changed()
