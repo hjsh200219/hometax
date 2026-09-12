@@ -1,4 +1,51 @@
-# HomeTax 인수인계
+---
+created: 2026-09-12T09:35:00+09:00
+project: hometax
+summary: 하드코딩 날짜로 하루 만에 깨진 발행 미리보기 테스트를 고치고 미push 커밋 3개와 함께 origin/main에 올렸습니다.
+---
+
+## Session Digest
+저장소 점검 요청으로 시작해 pytest 268개 중 1개 실패를 발견했습니다.
+`tests/test_invoice_issuance_api.py::test_preview_issue_validates_input_dates`가
+`written_date="2026-09-12"`를 하드코딩해 미래 날짜 422를 기대했는데, 2026-09-12가 되자
+유효한 날짜가 되어 200을 반환했습니다. 검증 코드는 Asia/Seoul 기준 오늘과 비교합니다
+(`src/hometax_login/issuance_models.py:49,82`). 같은 기준으로 오늘+1일을 계산하도록 고치고
+`.gitignore`에 `.omc/`와 인계서 백업 패턴을 추가했습니다.
+
+## Progress
+- 완료: 날짜 하드코딩 테스트 수정(`af8de29`). pytest 268개 전부 통과.
+- 완료: ruff check·format, compileall, `uv build --wheel`(hometax-0.4.0) 통과.
+- 완료: origin/main push. 이전 세션 미push 커밋 3개(`fa4582e`, `233e6ec`, `e684589`)도 함께 반영.
+- 미완료: 발행·정정·취소의 실제 홈택스 전송 호환성 검증(0.4.0부터 계속 미검증).
+
+## Next Steps
+1. 발행 API 실전송 검증 여부 결정. 지금은 `HOMETAX_INVOICE_WRITES_ENABLED=false`가 기본입니다.
+2. 거래처 쓰기(`HOMETAX_COUNTERPARTY_WRITES_ENABLED`) 실반영 검증도 같은 상태입니다.
+3. 인증서 `03`(브라우저) 로그인과 PFX 로그인 경로는 여전히 미검증입니다.
+
+## Blockers
+- 없음. 이번 세션에서 하드 블록은 없었습니다.
+
+## Watch Out
+- 테스트에 미래 날짜를 넣을 때는 리터럴을 쓰지 말고 Asia/Seoul 기준으로 계산하세요.
+  검증 코드가 실시간 오늘과 비교하므로 리터럴은 다음 날 바로 깨집니다.
+- `tests/`에 남은 날짜 리터럴은 전부 과거 날짜라 시간이 지나도 깨지지 않습니다. 판정 규칙은
+  "오늘보다 과거면 방치, 미래면 유도식으로 교체"입니다.
+- `tests/test_invoice_api.py:206`의 `bad_date` 단언은 기간 규칙이 아니라 `start_date="20260901"`의
+  타입 변환 실패(`date_from_datetime_inexact`)로 422가 납니다. 즉 `InvoiceFilters.valid_period`는
+  이 단언에서 실행되지 않습니다(이번 세션 실측). 하이픈을 넣어 "고치면" 2026-09-30부터
+  `end_date <= today`가 성립해 200이 되어 단언이 뒤집힙니다. 손볼 때는 파싱 실패 케이스를 그대로 두고
+  기간 규칙 검증은 `today + timedelta(days=N)`으로 유도한 별도 단언을 추가하세요.
+- mypy·pyright 설정이 없어 정적 타입 검사 단계는 실행할 수 없습니다. ruff만 있습니다.
+- 이 저장소에는 AGENTS.md 하네스가 없어 harness-gc 점검은 건너뛰었습니다.
+
+## Files Touched
+- `tests/test_invoice_issuance_api.py`
+- `.gitignore`
+
+---
+
+# 이전 세션 기록 (2026-09-11)
 
 - 생성: 2026-09-11. 사용자 요청: Agent2 인증서 처리 로직을 재사용한 별도 Python 로그인 API.
 - 실행 대상: 우선 Mac 로컬. 발행 API는 0.4.0에서 참조 구현을 추가했으며 기본 전송 비활성.
