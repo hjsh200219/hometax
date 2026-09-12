@@ -9,3 +9,4 @@
 - [cli-write-path-two-preconditions](cli-write-path-two-preconditions.md) — 쓰기는 --wire 필수, 미리보기는 같은 실행 안에서만 유효
 - [financial-lists-have-different-schemas](financial-lists-have-different-schemas.md) — 카드매출 목록 셋은 스키마가 다르다. 하나만 읽으면 금액 0
 - [identifier-fields-need-the-business-number-gate](identifier-fields-need-the-business-number-gate.md) — *EncCntn은 사업자번호 정규식 통과분만 노출
+- [no-automation-ban-but-delegation-needs-consultation](no-automation-ban-but-delegation-needs-consultation.md) — 자동화 금지 조항 없음 · 대행은 국세청 사전협의 대상
