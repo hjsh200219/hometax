@@ -52,6 +52,43 @@ def first_text(row: dict, *keys: str) -> str | None:
     return None
 
 
+def business_number(value) -> str | None:
+    """사업자등록번호 형식만 통과시킨다.
+
+    상류 `*EncCntn` 필드는 주민등록번호나 암호문을 담을 수 있다. 형식이 맞지 않으면
+    버린다(invoices.py 가 같은 필드에 거는 규칙과 동일하다)."""
+    text = optional_text(value)
+    if text is None:
+        return None
+    if re.fullmatch(r"(?:[0-9]{10}|[0-9]{3}-[0-9]{2}-[0-9]{5})", text):
+        return text.replace("-", "")
+    return None
+
+
+def business_number_from(row: dict, *keys: str) -> str | None:
+    for key in keys:
+        number = business_number(row.get(key))
+        if number:
+            return number
+    return None
+
+
+def checked_page(page: dict, query) -> tuple[int, int, int]:
+    """상류가 요청한 페이지를 그대로 돌려줬는지 확인하고 (번호, 크기, 전체건수) 를 준다."""
+    page_number = integer(page.get("pageNum"))
+    page_size = integer(page.get("pageSize"))
+    total_count = integer(page.get("totalCount"))
+    if page_number != query.page or page_size != query.page_size or total_count < 0:
+        raise changed()
+    return page_number, page_size, total_count
+
+
+def checked_row_count(rows: list, page_number: int, page_size: int, total_count: int) -> None:
+    expected = min(page_size, max(0, total_count - (page_number - 1) * page_size))
+    if len(rows) != expected:
+        raise changed()
+
+
 def normalized_day(value) -> date:
     if not isinstance(value, str):
         raise changed()
@@ -392,8 +429,8 @@ class FinancialDataClient:
             if not isinstance(row, dict):
                 raise changed()
             supply = integer(row.get("splCft"))
-            tax = integer(row.get("vaTxamt"), default=0)
-            tax_exempt = integer(row.get("tip"), default=0)
+            tax = integer(row.get("vaTxamt"))
+            tax_exempt = integer(row.get("tip"))
             total = integer(row.get("totaTrsAmt"))
             if supply + tax + tax_exempt != total:
                 raise changed()
@@ -401,7 +438,7 @@ class FinancialDataClient:
                 BusinessCardTransaction(
                     transaction_date=normalized_day(row.get("trsDt") or row.get("prhDt")),
                     merchant_name=first_text(row, "crdcBmanTxprNm", "mrntTxprNm"),
-                    merchant_business_number=first_text(
+                    merchant_business_number=business_number_from(
                         row, "crdcTxprDscmNoEncCntn", "mrntTxprDscmNoEncCntn"
                     ),
                     card_company=first_text(row, "crccTxprNm", "tfbNm"),
@@ -418,9 +455,8 @@ class FinancialDataClient:
                     deduction_name=first_text(row, "vatDdcClNm", "ddcYnNm"),
                 )
             )
-        total_count = integer(page.get("totalCount"), default=0)
-        page_number = integer(page.get("pageNum"), default=query.page)
-        page_size = integer(page.get("pageSize"), default=query.page_size)
+        page_number, page_size, total_count = checked_page(page, query)
+        checked_row_count(rows, page_number, page_size, total_count)
         return BusinessCardPage(
             company_name=company,
             query=query,
@@ -428,7 +464,7 @@ class FinancialDataClient:
             page_size=page_size,
             total_count=total_count,
             has_next=page_number * page_size < total_count,
-            total_amount=integer(data.get("sumTotaTrsAmt"), default=0),
+            total_amount=integer(data.get("sumTotaTrsAmt")),
             items=items,
         )
 
@@ -474,9 +510,8 @@ class FinancialDataClient:
                     confirmed_date=optional_day(row.get("cardCnfrDt")),
                 )
             )
-        total_count = integer(page.get("totalCount"), default=len(items))
-        page_number = integer(page.get("pageNum"), default=query.page)
-        page_size = integer(page.get("pageSize"), default=query.page_size)
+        page_number, page_size, total_count = checked_page(page, query)
+        checked_row_count(rows, page_number, page_size, total_count)
         return BusinessCardRegistrationPage(
             company_name=company,
             query=query,
@@ -519,12 +554,18 @@ class FinancialDataClient:
                 "rsnbTotaSumAmt",
             ),
         }[prefix]
+        supply = integer(row.get(fields[1]))
+        tax = integer(row.get(fields[2]))
+        tax_exempt = integer(row.get(fields[3]))
+        total = integer(row.get(fields[4]))
+        if supply + tax + tax_exempt != total:
+            raise changed()
         return AmountBreakdown(
-            count=integer(row.get(fields[0]), default=0),
-            supply_amount=integer(row.get(fields[1]), default=0),
-            tax_amount=integer(row.get(fields[2]), default=0),
-            tax_exempt_amount=integer(row.get(fields[3]), default=0),
-            total_amount=integer(row.get(fields[4]), default=0),
+            count=integer(row.get(fields[0])),
+            supply_amount=supply,
+            tax_amount=tax,
+            tax_exempt_amount=tax_exempt,
+            total_amount=total,
         )
 
     async def cash_receipt_purchases(
@@ -561,23 +602,28 @@ class FinancialDataClient:
         for row in rows:
             if not isinstance(row, dict):
                 raise changed()
+            supply = integer(row.get("splCft"))
+            tax = integer(row.get("vaTxamt"))
+            tax_exempt = integer(row.get("tip"))
+            total = integer(row.get("totaTrsAmt"))
+            if supply + tax + tax_exempt != total:
+                raise changed()
             items.append(
                 CashReceiptMerchantTotal(
                     user_name=optional_text(row.get("rcprTxprNm")),
                     merchant_name=optional_text(row.get("mrntTxprNm")),
-                    merchant_business_number=optional_text(row.get("mrntTxprDscmNoEncCntn")),
+                    merchant_business_number=business_number(row.get("mrntTxprDscmNoEncCntn")),
                     merchant_type=optional_text(row.get("bmanClNm")),
-                    count=integer(row.get("trsScnt"), default=0),
-                    supply_amount=integer(row.get("splCft"), default=0),
-                    tax_amount=integer(row.get("vaTxamt"), default=0),
-                    tax_exempt_amount=integer(row.get("tip"), default=0),
-                    total_amount=integer(row.get("totaTrsAmt"), default=0),
+                    count=integer(row.get("trsScnt")),
+                    supply_amount=supply,
+                    tax_amount=tax,
+                    tax_exempt_amount=tax_exempt,
+                    total_amount=total,
                     deduction_code=optional_text(row.get("prhTxamtDdcClCd")),
                 )
             )
-        total_count = integer(page.get("totalCount"), default=0)
-        page_number = integer(page.get("pageNum"), default=query.page)
-        page_size = integer(page.get("pageSize"), default=query.page_size)
+        page_number, page_size, total_count = checked_page(page, query)
+        checked_row_count(rows, page_number, page_size, total_count)
         return CashReceiptPurchasePage(
             company_name=company,
             query=query,
@@ -607,14 +653,20 @@ class FinancialDataClient:
         for row in rows:
             if not isinstance(row, dict):
                 raise changed()
+            supply = integer(row.get("cshSlsSplCftCmttAmt"))
+            tax = integer(row.get("cshSlsVatCmttAmt"))
+            service = integer(row.get("cshSlsTipCmttAmt"))
+            total = integer(row.get("cshSlsCmttAmt"))
+            if supply + tax + service != total:
+                raise changed()
             items.append(
                 CashReceiptSalesMonth(
                     month=normalized_month(row.get("sttsYm")),
-                    count=integer(row.get("cshSlsCmttScnt"), default=0),
-                    supply_amount=integer(row.get("cshSlsSplCftCmttAmt"), default=0),
-                    tax_amount=integer(row.get("cshSlsVatCmttAmt"), default=0),
-                    service_charge_amount=integer(row.get("cshSlsTipCmttAmt"), default=0),
-                    total_amount=integer(row.get("cshSlsCmttAmt"), default=0),
+                    count=integer(row.get("cshSlsCmttScnt")),
+                    supply_amount=supply,
+                    tax_amount=tax,
+                    service_charge_amount=service,
+                    total_amount=total,
                 )
             )
         return CashReceiptSalesSummary(
@@ -644,29 +696,68 @@ class FinancialDataClient:
                 }
             },
         )
-        candidates = (
-            data.get("crdcTrsBrkdMateAdmDVOList"),
-            data.get("sleVcexSlsMateInqrDVOList"),
-            data.get("crdcZrpSleStlVcexMateAdmDVOList"),
-        )
-        rows = next((value for value in candidates if isinstance(value, list) and value), [])
-        if any(value is not None and not isinstance(value, list) for value in candidates):
+        # 응답에 목록이 셋 들어 있고 스키마가 서로 다르다. 하나만 골라 같은 필드명으로 읽으면
+        # 금액이 통째로 0이 된다(실계정에서 9,900원 매출이 0으로 보고됐다).
+        card_rows = data.get("crdcTrsBrkdMateAdmDVOList")
+        agency_rows = data.get("sleVcexSlsMateInqrDVOList")
+        quarter_rows = data.get("crdcZrpSleStlVcexMateAdmDVOList")
+        lists = (card_rows, agency_rows, quarter_rows)
+        if any(value is not None and not isinstance(value, list) for value in lists):
             raise changed()
-        items = []
-        for row in rows:
+        if not any(isinstance(value, list) for value in lists):
+            raise changed()
+
+        items: list[CardSalesMonth] = []
+        for row in card_rows or []:
             if not isinstance(row, dict):
                 raise changed()
             items.append(
                 CardSalesMonth(
                     month=normalized_month(row.get("stlYm")),
-                    data_type=optional_text(row.get("mateKndNm")),
-                    count=integer(row.get("stlScnt"), default=0),
-                    total_sales_amount=integer(row.get("totaStlAmt"), default=0),
-                    credit_card_amount=integer(row.get("etcSls"), default=0),
-                    purchase_card_amount=integer(row.get("purcEuCardSls"), default=0),
-                    service_charge_amount=integer(row.get("tip"), default=0),
+                    data_type=optional_text(row.get("mateKndNm")) or "카드사 제출",
+                    count=integer(row.get("stlScnt")),
+                    total_sales_amount=integer(row.get("totaStlAmt")),
+                    credit_card_amount=integer(row.get("etcSls")),
+                    purchase_card_amount=integer(row.get("purcEuCardSls")),
+                    service_charge_amount=integer(row.get("tip")),
                 )
             )
+        agency_count, agency_total = 0, 0
+        for row in agency_rows or []:
+            if not isinstance(row, dict):
+                raise changed()
+            credit = integer(row.get("crdcAmt"))
+            other = integer(row.get("etcAmt"))
+            total = integer(row.get("sumTipExclAmt"))
+            if credit + other != total:
+                raise changed()
+            count = integer(row.get("sumStlScnt"))
+            agency_count += count
+            agency_total += total
+            items.append(
+                CardSalesMonth(
+                    month=normalized_month(row.get("stlYm")),
+                    data_type="판매(결제)대행",
+                    count=count,
+                    total_sales_amount=total,
+                    credit_card_amount=credit,
+                    purchase_card_amount=other,
+                    service_charge_amount=0,
+                )
+            )
+        # 분기 요약은 같은 매출을 다시 담고 있어 합산하지 않는다. 대행 자료와 어긋나면 거절한다.
+        summary_count, summary_total = 0, 0
+        for row in quarter_rows or []:
+            if not isinstance(row, dict):
+                raise changed()
+            kind = optional_text(row.get("mateKndNm")) or ""
+            if "대행" not in kind:
+                continue
+            summary_count += integer(row.get("stlScnt"))
+            summary_total += integer(row.get("totaStlAmt"))
+        if quarter_rows and (summary_count, summary_total) != (0, 0):
+            if (summary_count, summary_total) != (agency_count, agency_total):
+                raise changed()
         return CardSalesSummary(
             company_name=company,
             query=query,
@@ -708,8 +799,8 @@ class FinancialDataClient:
                 raise changed()
             items.append(
                 BusinessAccount(
-                    business_number=optional_text(
-                        row.get("txprDscmNoEncCntn") or row.get("accTxprDscmNoEncCntn")
+                    business_number=business_number_from(
+                        row, "txprDscmNoEncCntn", "accTxprDscmNoEncCntn"
                     ),
                     account_type=optional_text(row.get("txprAccClCdNm")),
                     bank_name=first_text(row, "bankNm", "bankCdNm"),
@@ -720,9 +811,8 @@ class FinancialDataClient:
                     status=first_text(row, "accStatClCdNm", "sncStatCdNm"),
                 )
             )
-        total_count = integer(page.get("totalCount"), default=len(items))
-        page_number = integer(page.get("pageNum"), default=query.page)
-        page_size = integer(page.get("pageSize"), default=query.page_size)
+        page_number, page_size, total_count = checked_page(page, query)
+        checked_row_count(rows, page_number, page_size, total_count)
         return BusinessAccountPage(
             company_name=company,
             query=query,

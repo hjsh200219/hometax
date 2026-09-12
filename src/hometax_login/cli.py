@@ -56,6 +56,8 @@ from .protocol import HometaxClient
 from .write_journal import WriteJournal
 
 MAX_MONTHS_PER_QUERY = 3
+MAX_PAGES_PER_QUERY = 200
+PAGE_DELAY_SECONDS = 0.2
 SEOUL = ZoneInfo("Asia/Seoul")
 REASON_MESSAGE = {
     "missing": "저장해 둔 인증서 경로가 사라졌습니다. 다시 고릅니다.",
@@ -334,6 +336,11 @@ async def cmd_invoices(context: Context) -> int:
                 if not page.has_next:
                     break
                 page_number += 1
+                if page_number > MAX_PAGES_PER_QUERY:
+                    raise CommandError(
+                        f"페이지가 {MAX_PAGES_PER_QUERY}쪽을 넘었습니다. 기간을 좁혀 주세요."
+                    )
+                await asyncio.sleep(PAGE_DELAY_SECONDS)
     finally:
         await client.close()
     for item in items:
@@ -428,6 +435,11 @@ async def cmd_business_cards(context: Context) -> int:
                 if not page.has_next:
                     break
                 page_number += 1
+                if page_number > MAX_PAGES_PER_QUERY:
+                    raise CommandError(
+                        f"페이지가 {MAX_PAGES_PER_QUERY}쪽을 넘었습니다. 기간을 좁혀 주세요."
+                    )
+                await asyncio.sleep(PAGE_DELAY_SECONDS)
     finally:
         await client.close()
     payload = {
@@ -465,6 +477,11 @@ async def cmd_registered_business_cards(context: Context) -> int:
             if not page.has_next:
                 break
             page_number += 1
+            if page_number > MAX_PAGES_PER_QUERY:
+                raise CommandError(
+                    f"페이지가 {MAX_PAGES_PER_QUERY}쪽을 넘었습니다. 조건을 좁혀 주세요."
+                )
+            await asyncio.sleep(PAGE_DELAY_SECONDS)
     finally:
         await client.close()
     payload = {"count": len(items), "items": [item.model_dump(mode="json") for item in items]}
@@ -502,6 +519,11 @@ async def cmd_cash_receipt_purchases(context: Context) -> int:
                 if not page.has_next:
                     break
                 page_number += 1
+                if page_number > MAX_PAGES_PER_QUERY:
+                    raise CommandError(
+                        f"페이지가 {MAX_PAGES_PER_QUERY}쪽을 넘었습니다. 기간을 좁혀 주세요."
+                    )
+                await asyncio.sleep(PAGE_DELAY_SECONDS)
     finally:
         await client.close()
     payload = {
@@ -589,6 +611,11 @@ async def cmd_business_accounts(context: Context) -> int:
             if not page.has_next:
                 break
             page_number += 1
+            if page_number > MAX_PAGES_PER_QUERY:
+                raise CommandError(
+                    f"페이지가 {MAX_PAGES_PER_QUERY}쪽을 넘었습니다. 조건을 좁혀 주세요."
+                )
+            await asyncio.sleep(PAGE_DELAY_SECONDS)
     finally:
         await client.close()
     payload = {"count": len(items), "items": [item.model_dump(mode="json") for item in items]}
@@ -620,6 +647,11 @@ async def cmd_counterparties(context: Context) -> int:
             if not page.has_next:
                 break
             page_number += 1
+            if page_number > MAX_PAGES_PER_QUERY:
+                raise CommandError(
+                    f"페이지가 {MAX_PAGES_PER_QUERY}쪽을 넘었습니다. 조건을 좁혀 주세요."
+                )
+            await asyncio.sleep(PAGE_DELAY_SECONDS)
     finally:
         await client.close()
     payload = {"count": len(items), "items": [item.model_dump(mode="json") for item in items]}

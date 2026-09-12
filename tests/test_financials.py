@@ -170,9 +170,9 @@ async def test_sales_summaries_and_business_accounts_use_fixed_read_actions():
                 }
             ]
         ),
+        # 목록 셋은 스키마가 서로 다르다. 실제 응답 모양 그대로 둔다.
         "ATESFAAA014R02": result(
-            crdcTrsBrkdMateAdmDVOList=[],
-            sleVcexSlsMateInqrDVOList=[
+            crdcTrsBrkdMateAdmDVOList=[
                 {
                     "stlYm": "202609",
                     "mateKndNm": "신용카드",
@@ -183,7 +183,24 @@ async def test_sales_summaries_and_business_accounts_use_fixed_read_actions():
                     "tip": 0,
                 }
             ],
-            crdcZrpSleStlVcexMateAdmDVOList=[],
+            sleVcexSlsMateInqrDVOList=[
+                {
+                    "stlYm": "202609",
+                    "txprNm": "예시결제대행",
+                    "sumStlScnt": 1,
+                    "crdcAmt": 9900,
+                    "etcAmt": 0,
+                    "sumTipExclAmt": 9900,
+                }
+            ],
+            crdcZrpSleStlVcexMateAdmDVOList=[
+                {
+                    "stlQrt": "2026-3분기",
+                    "mateKndNm": "판매(결제)대행 자료",
+                    "stlScnt": 1,
+                    "totaStlAmt": 9900,
+                }
+            ],
         ),
         "ATTCMCDA001R02": result(
             pageInfoVO={"pageNum": 1, "pageSize": 50, "totalCount": 1},
@@ -222,7 +239,11 @@ async def test_sales_summaries_and_business_accounts_use_fixed_read_actions():
     registered_cards = await service.registered_business_cards(BusinessAccountQuery())
 
     assert cash.total_amount == 1100
-    assert cards.credit_card_amount == 3300
+    # 카드사 제출 3,300원과 판매대행 9,900원을 모두 합산한다(한쪽만 읽어 0이 되면 안 된다).
+    assert cards.credit_card_amount == 3300 + 9900
+    assert cards.total_sales_amount == 3300 + 9900
+    assert cards.count == 3 + 1
+    assert {item.data_type for item in cards.items} == {"신용카드", "판매(결제)대행"}
     assert accounts.items[0].account_number == "****-9012"
     assert accounts.items[0].registered_date == date(2026, 9, 1)
     assert registered_cards.items[0].card_number == "1111-****-4444"
@@ -250,3 +271,133 @@ async def test_mobile_sso_rejects_missing_token_before_financial_action():
 
     assert caught.value.code == "SESSION_NOT_AUTHENTICATED"
     assert all("jsonAction.do" not in path for _method, path, _kwargs in client.calls)
+
+
+def cash_sales_response(**overrides):
+    row = {
+        "sttsYm": "202609",
+        "cshSlsCmttScnt": 2,
+        "cshSlsSplCftCmttAmt": 1000,
+        "cshSlsVatCmttAmt": 100,
+        "cshSlsTipCmttAmt": 0,
+        "cshSlsCmttAmt": 1100,
+    }
+    row.update(overrides)
+    return result(cshptIsfIsnPubcDVOList=[row])
+
+
+@pytest.mark.asyncio
+async def test_renamed_amount_field_is_rejected_instead_of_reported_as_zero():
+    # 상류가 금액 필드명을 바꾸면 "매출 0원"이 아니라 거절이어야 한다.
+    renamed = cash_sales_response()
+    renamed["cshptIsfIsnPubcDVOList"][0].pop("cshSlsSplCftCmttAmt")
+    renamed["cshptIsfIsnPubcDVOList"][0]["RENAMED"] = 1000
+    service = FinancialDataClient(FakeClient({"ATECRCBA003R05": renamed}))
+
+    with pytest.raises(LoginError) as caught:
+        await service.cash_receipt_sales(YearQuery(year=2026))
+
+    assert caught.value.code == "FINANCIAL_RESPONSE_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_amounts_that_do_not_add_up_are_rejected():
+    service = FinancialDataClient(
+        FakeClient({"ATECRCBA003R05": cash_sales_response(cshSlsCmttAmt=9999)})
+    )
+
+    with pytest.raises(LoginError) as caught:
+        await service.cash_receipt_sales(YearQuery(year=2026))
+
+    assert caught.value.code == "FINANCIAL_RESPONSE_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_card_sales_rejects_a_response_without_any_known_list():
+    service = FinancialDataClient(FakeClient({"ATESFAAA014R02": result()}))
+
+    with pytest.raises(LoginError) as caught:
+        await service.card_sales(CardSalesQuery(year=2026))
+
+    assert caught.value.code == "FINANCIAL_RESPONSE_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_card_sales_rejects_a_quarter_summary_that_contradicts_the_agency_rows():
+    service = FinancialDataClient(
+        FakeClient(
+            {
+                "ATESFAAA014R02": result(
+                    sleVcexSlsMateInqrDVOList=[
+                        {
+                            "stlYm": "202609",
+                            "sumStlScnt": 1,
+                            "crdcAmt": 9900,
+                            "etcAmt": 0,
+                            "sumTipExclAmt": 9900,
+                        }
+                    ],
+                    crdcZrpSleStlVcexMateAdmDVOList=[
+                        {
+                            "stlQrt": "2026-3분기",
+                            "mateKndNm": "판매(결제)대행 자료",
+                            "stlScnt": 1,
+                            "totaStlAmt": 12345,
+                        }
+                    ],
+                )
+            }
+        )
+    )
+
+    with pytest.raises(LoginError) as caught:
+        await service.card_sales(CardSalesQuery(year=2026))
+
+    assert caught.value.code == "FINANCIAL_RESPONSE_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_identifier_fields_never_carry_resident_numbers_or_ciphertext():
+    response = card_response()
+    row = response["busnCrdcTrsBrkdAdmDVOList"][0]
+    row["crdcTxprDscmNoEncCntn"] = "900101-1234567"
+    row["mrntTxprDscmNoEncCntn"] = "kJ8xQ2+Ab/9Zc="
+    service = FinancialDataClient(FakeClient({"ATECRCCA001R06": response}))
+
+    page = await service.business_cards(
+        BusinessCardQuery(start_date="2026-09-01", end_date="2026-09-12")
+    )
+
+    assert page.items[0].merchant_business_number is None
+    dumped = page.model_dump_json()
+    assert "900101-1234567" not in dumped
+    assert "kJ8xQ2+Ab/9Zc=" not in dumped
+    assert "1111222233334444" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_a_page_echo_that_does_not_match_the_request_is_rejected():
+    response = card_response()
+    response["pageInfoVO"] = {"pageNum": 1, "pageSize": 50, "totalCount": 1}
+    service = FinancialDataClient(FakeClient({"ATECRCCA001R06": response}))
+
+    with pytest.raises(LoginError) as caught:
+        await service.business_cards(
+            BusinessCardQuery(start_date="2026-09-01", end_date="2026-09-12", page=7)
+        )
+
+    assert caught.value.code == "FINANCIAL_RESPONSE_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_a_row_count_that_contradicts_total_count_is_rejected():
+    response = card_response()
+    response["pageInfoVO"]["totalCount"] = 120  # 50건이 와야 하는데 1건만 왔다
+    service = FinancialDataClient(FakeClient({"ATECRCCA001R06": response}))
+
+    with pytest.raises(LoginError) as caught:
+        await service.business_cards(
+            BusinessCardQuery(start_date="2026-09-01", end_date="2026-09-12")
+        )
+
+    assert caught.value.code == "FINANCIAL_RESPONSE_CHANGED"
