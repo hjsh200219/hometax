@@ -10,6 +10,7 @@ created: 2026-09-12
 - `src/hometax_login/issuance_models.py:49` (발행 작성일)
 - `src/hometax_login/issuance_models.py:82` (취소 작성일)
 - `src/hometax_login/invoices.py:36` (조회 기간, `end_date <= min(today, limit)`)
+- `src/hometax_login/cli.py` (`today_kst`, `--ytd` 기간과 취소 기본 작성일)
 
 **Why:** 고정 날짜를 쓰면 작성 다음 날 깨집니다. 실제로 `test_preview_issue_validates_input_dates`가
 `written_date="2026-09-12"`를 하드코딩해 2026-09-12에 422 대신 200을 받아 실패했고, `af8de29`에서

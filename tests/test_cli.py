@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unicodedata
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from cryptography import x509
@@ -72,11 +73,13 @@ def test_split_periods_keeps_a_short_range_in_one_call():
     ]
 
 
-def test_parse_range_ytd_starts_on_january_first():
+def test_parse_range_ytd_uses_the_seoul_clock():
+    # 검증 게이트가 Asia/Seoul 기준이라 호스트 시간대와 무관하게 같은 날짜여야 한다.
     start, end = cli.parse_range(parse(["invoices", "--ytd"]))
 
     assert start == date(end.year, 1, 1)
-    assert end == datetime.now(UTC).astimezone().date()
+    assert end == datetime.now(ZoneInfo("Asia/Seoul")).date()
+    assert cli.today_kst() == end
 
 
 def test_parse_range_requires_a_period():

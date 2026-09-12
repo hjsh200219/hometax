@@ -16,8 +16,9 @@ import sys
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .cert_discovery import (
     CertificateEntry,
@@ -48,6 +49,7 @@ from .protocol import HometaxClient
 from .write_journal import WriteJournal
 
 MAX_MONTHS_PER_QUERY = 3
+SEOUL = ZoneInfo("Asia/Seoul")
 REASON_MESSAGE = {
     "missing": "저장해 둔 인증서 경로가 사라졌습니다. 다시 고릅니다.",
     "changed": "저장해 둔 경로에 다른 인증서가 있습니다(갱신된 것으로 보입니다). 다시 고릅니다.",
@@ -227,8 +229,14 @@ def split_periods(start: date, end: date) -> list[tuple[date, date]]:
     return spans
 
 
+def today_kst() -> date:
+    """검증 게이트가 한국 시간 기준으로 판정하므로 날짜도 같은 시계에서 얻는다.
+    UTC 호스트에서 date.today() 를 쓰면 KST 00시~09시에 어제가 들어간다."""
+    return datetime.now(SEOUL).date()
+
+
 def parse_range(args: argparse.Namespace) -> tuple[date, date]:
-    today = datetime.now(UTC).astimezone().date()
+    today = today_kst()
     if getattr(args, "ytd", False):
         return date(today.year, 1, 1), today
     if not args.start or not args.end:
@@ -526,7 +534,7 @@ async def invoice_operation(context: Context, action: str) -> int:
             payload.setdefault("client_reference", str(uuid.uuid4()))
             fields = {
                 "reason": args.reason,
-                "written_date": args.written_date or date.today().isoformat(),
+                "written_date": args.written_date or today_kst().isoformat(),
                 **payload,
             }
             preview = await operations.preview_cancel(args.approval, InvoiceCancelRequest(**fields))
