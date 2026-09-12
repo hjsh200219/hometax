@@ -1,7 +1,7 @@
 [project]
 name = "hometax"
-version = "0.4.0"
-description = "Standalone certificate-based HomeTax login and session API"
+version = "0.5.0"
+description = "HomeTax electronic tax invoice CLI and library, driven by a file-based NPKI certificate"
 requires-python = ">=3.12"
 dependencies = [
   "asn1crypto>=1.5.1,<2",
