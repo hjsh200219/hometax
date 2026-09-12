@@ -31,7 +31,9 @@ def make_client() -> HometaxClient:
 async def test_save_and_load_round_trip_keeps_identity_and_cookies(local_home):
     client = make_client()
     try:
-        save_session(client, {"user_id": "example-user", "user_name": "예시컨설팅"}, ttl_seconds=600)
+        save_session(
+            client, {"user_id": "example-user", "user_name": "예시컨설팅"}, ttl_seconds=600
+        )
     finally:
         await client.close()
 

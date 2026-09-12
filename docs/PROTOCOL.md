@@ -2,10 +2,8 @@
 
 ## 기존 코드에서 가져온 부분
 
-사용자 소유 `internal-csharp`, `origin/internal-branch`의
-`internal-commit` 기준
-`internal Npki loader`의 인증서 로딩과 SEED 개인키 복호화 흐름을 Python으로 옮겼습니다.
-심평원 `HiraApiClient`의 URL·SSO 흐름과 공백 한 글자에 대한 CMS 서명은 재사용하지 않았습니다.
+저자가 소유한 비공개 C# 구현의 NPKI 인증서 로딩과 SEED 개인키 복호화 흐름을 Python으로
+옮겼습니다. 그 구현의 다른 기관 연동(URL·SSO 흐름·CMS 서명)은 재사용하지 않았습니다.
 
 ## 홈택스 참고 자료
 
