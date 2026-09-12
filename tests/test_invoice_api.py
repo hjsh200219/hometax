@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -201,9 +202,19 @@ async def test_invoice_list_validates_query_and_forwards_call(app):
         base_url="http://test",
         headers={"Authorization": f"Bearer {KEY_A}"},
     ) as c:
-        bad_date = await c.get(
+        # 하이픈 없는 날짜는 기간 규칙 이전에 타입 변환에서 걸린다.
+        # 기간 규칙 자체는 아래 future_period가 검사한다.
+        malformed_date = await c.get(
             f"/v1/hometax/sessions/{item.id}/tax-invoices",
             params={"start_date": "20260901", "end_date": "2026-09-30"},
+        )
+        today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+        future_period = await c.get(
+            f"/v1/hometax/sessions/{item.id}/tax-invoices",
+            params={
+                "start_date": today.isoformat(),
+                "end_date": (today + timedelta(days=1)).isoformat(),
+            },
         )
         bad_page = await c.get(
             f"/v1/hometax/sessions/{item.id}/tax-invoices",
@@ -218,9 +229,13 @@ async def test_invoice_list_validates_query_and_forwards_call(app):
             ),
         )
 
-    assert bad_date.status_code == 422
-    assert bad_date.headers["Cache-Control"] == "no-store"
-    assert bad_date.headers["Pragma"] == "no-cache"
+    assert malformed_date.status_code == 422
+    assert malformed_date.headers["Cache-Control"] == "no-store"
+    assert malformed_date.headers["Pragma"] == "no-cache"
+    assert future_period.status_code == 422
+    assert future_period.headers["Cache-Control"] == "no-store"
+    assert future_period.headers["Pragma"] == "no-cache"
+    assert len(invoices.calls) == 1
     assert bad_page.status_code == 422
     assert bad_page.headers["Cache-Control"] == "no-store"
     assert bad_page.headers["Pragma"] == "no-cache"

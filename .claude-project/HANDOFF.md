@@ -31,11 +31,11 @@ summary: 하드코딩 날짜로 하루 만에 깨진 발행 미리보기 테스�
   검증 코드가 실시간 오늘과 비교하므로 리터럴은 다음 날 바로 깨집니다.
 - `tests/`에 남은 날짜 리터럴은 전부 과거 날짜라 시간이 지나도 깨지지 않습니다. 판정 규칙은
   "오늘보다 과거면 방치, 미래면 유도식으로 교체"입니다.
-- `tests/test_invoice_api.py:206`의 `bad_date` 단언은 기간 규칙이 아니라 `start_date="20260901"`의
-  타입 변환 실패(`date_from_datetime_inexact`)로 422가 납니다. 즉 `InvoiceFilters.valid_period`는
-  이 단언에서 실행되지 않습니다(이번 세션 실측). 하이픈을 넣어 "고치면" 2026-09-30부터
-  `end_date <= today`가 성립해 200이 되어 단언이 뒤집힙니다. 손볼 때는 파싱 실패 케이스를 그대로 두고
-  기간 규칙 검증은 `today + timedelta(days=N)`으로 유도한 별도 단언을 추가하세요.
+- `tests/test_invoice_api.py`의 `malformed_date` 단언은 기간 규칙이 아니라 `start_date="20260901"`의
+  타입 변환 실패(`date_from_datetime_inexact`)로 422가 납니다. 이 사실을 주석으로 고정했고, 기간 규칙은
+  같은 테스트의 `future_period`(오늘+1일)와 `tests/test_invoices.py::test_invoice_filters_reject_periods_the_rule_owns`가
+  따로 검사합니다. 두 단언은 `valid_period`를 무력화하면 실제로 실패하는 것을 확인했습니다(뮤테이션 검사).
+  하이픈을 넣어 `malformed_date`를 "고치면" 2026-09-30부터 200이 되어 뒤집히므로 그대로 두세요.
 - mypy·pyright 설정이 없어 정적 타입 검사 단계는 실행할 수 없습니다. ruff만 있습니다.
 - 이 저장소에는 AGENTS.md 하네스가 없어 harness-gc 점검은 건너뛰었습니다.
 

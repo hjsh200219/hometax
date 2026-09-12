@@ -1,8 +1,10 @@
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from hometax_login.errors import LoginError
 from hometax_login.invoices import CounterpartyQuery, InvoiceFilters, InvoiceQuery
@@ -831,3 +833,20 @@ async def test_counterparty_rejects_failed_or_changed_upstream_response(mutate, 
         await client.close()
 
     assert caught.value.code == expected_code
+
+
+def test_invoice_filters_reject_periods_the_rule_owns():
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+    allowed = InvoiceFilters(start_date=today - timedelta(days=1), end_date=today)
+    assert allowed.end_date == today
+
+    rejected = (
+        (today, today + timedelta(days=1)),
+        (today - timedelta(days=1), today - timedelta(days=2)),
+        (today - timedelta(days=200), today - timedelta(days=1)),
+    )
+    for start, end in rejected:
+        with pytest.raises(ValidationError) as caught:
+            InvoiceFilters(start_date=start, end_date=end)
+        assert "ordered period of at most three months" in str(caught.value)
