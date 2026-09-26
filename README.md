@@ -52,6 +52,7 @@ hometax certs                              # 인증서 목록(만료분 표시)
 hometax login                              # 인증서 선택 → 로그인 → 세션 10분
 hometax summary --ytd                      # 올해 매출 합계
 hometax summary --ytd --direction purchases
+hometax revenue 2026                       # 매입매출 월별 + 누계
 hometax invoices --from 2026-07-01 --to 2026-09-12 --json
 hometax counterparties --name 휴맥스
 hometax cards --ytd --deduction deductible
@@ -95,6 +96,22 @@ hometax status / hometax logout
 
 `business-accounts`는 신고된 계좌의 등록 정보만 반환하며 입출금 거래내역은 포함하지 않습니다.
 상세한 매개변수와 API 응답은 [카드·현금영수증·사업용계좌 조회](docs/FINANCIALS.md)를 보세요.
+
+## 0.7.0 매입매출 리포트
+
+```bash
+hometax revenue 2026             # 2026년 월별 행 + 누계(연도 생략 시 올해)
+hometax revenue -ytd 2026        # 월별 행 없이 누계만(연도 생략 시 올해)
+hometax revenue 2025             # 지난해 1~12월
+hometax revenue 2026 --basis issued   # 세금계산서를 발급일 기준으로 월에 귀속
+```
+
+매출은 세금계산서·신용카드 매출·현금영수증 매출, 매입은 세금계산서·사업용카드·현금영수증
+매입을 월별로 모아 합계와 차액(매출−매입)을 냅니다. 금액은 모두 **합계금액(부가세 포함)** 입니다.
+카드매출이 공급가액과 세액을 나눠 주지 않아 출처를 한 기준으로 더할 수 있는 값이 합계금액뿐이기
+때문입니다. 세금계산서는 기본으로 부가세 귀속 기준인 **작성일**의 달에 넣습니다. 은행 입출금·
+PG 정산·종이 증빙은 홈택스에 없으므로 빠집니다. 자세한 기준은 [FINANCIALS](docs/FINANCIALS.md#매입매출-리포트)를
+보세요.
 
 ## 쓰기 — 미리보기가 기본입니다
 

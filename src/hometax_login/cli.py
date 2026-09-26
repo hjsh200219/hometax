@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import calendar
 import functools
 import getpass
 import json
@@ -56,6 +57,7 @@ from .local_session import (
     save_session,
 )
 from .protocol import HometaxClient
+from .revenue import build_report, month_key, month_keys, monthly_totals, render
 from .write_journal import WriteJournal
 
 MAX_MONTHS_PER_QUERY = 3
@@ -648,6 +650,114 @@ async def cmd_card_sales(context: Context) -> int:
     return 0
 
 
+async def all_pages(fetch, query) -> list:
+    items, page_number = [], 1
+    while True:
+        page = await fetch(query.model_copy(update={"page": page_number}))
+        items.extend(page.items)
+        if not page.has_next:
+            return items
+        page_number += 1
+        if page_number > MAX_PAGES_PER_QUERY:
+            raise CommandError(
+                f"페이지가 {MAX_PAGES_PER_QUERY}쪽을 넘었습니다. 기간을 좁혀 주세요."
+            )
+        await asyncio.sleep(PAGE_DELAY_SECONDS)
+
+
+def year_range(year: int) -> tuple[date, date]:
+    validate_year(year)
+    if year < 2000:
+        raise CommandError("2000년 이후 연도만 조회할 수 있습니다.")
+    return date(year, 1, 1), min(date(year, 12, 31), today_kst())
+
+
+def revenue_mode(args: argparse.Namespace) -> tuple[int, bool]:
+    """`revenue 2026` 은 월별+누계, `revenue -ytd 2026` 은 누계만. 연도를 빼면 올해."""
+    ytd = getattr(args, "ytd", None)
+    years = {value for value in (args.year, None if ytd is True else ytd) if value is not None}
+    if len(years) > 1:
+        raise CommandError("연도를 서로 다르게 두 번 지정했습니다.")
+    year = years.pop() if years else today_kst().year
+    return year, ytd is None or args.monthly
+
+
+async def cmd_revenue(context: Context) -> int:
+    args = context.args
+    year, monthly = revenue_mode(args)
+    start, end = year_range(year)
+    months = month_keys(start, end)
+    client, _ = await session_client(args)
+    sales: dict[str, dict[str, int]] = {}
+    purchases: dict[str, dict[str, int]] = {}
+    try:
+        for direction, table in (("sales", sales), ("purchases", purchases)):
+            invoices = []
+            for span_start, span_end in split_periods(start, end):
+                query = InvoiceQuery(
+                    start_date=span_start,
+                    end_date=span_end,
+                    direction=direction,
+                    date_basis=args.basis,
+                    page_size=50,
+                )
+                invoices.extend(await all_pages(client.invoices.list, query))
+            table["tax_invoice"] = monthly_totals(
+                (month_key(getattr(item, f"{args.basis}_date")), item.total_amount)
+                for item in invoices
+            )
+
+        card_sales = await client.financials.card_sales(
+            CardSalesQuery(year=year, quarter_from=1, quarter_to=(end.month - 1) // 3 + 1)
+        )
+        sales["card"] = monthly_totals(
+            (item.month, item.total_sales_amount) for item in card_sales.items
+        )
+        cash_sales = await client.financials.cash_receipt_sales(YearQuery(year=year))
+        sales["cash_receipt"] = monthly_totals(
+            (item.month, item.total_amount) for item in cash_sales.items
+        )
+
+        card_purchases = []
+        for span_start, span_end in split_periods(start, end):
+            query = BusinessCardQuery(start_date=span_start, end_date=span_end, page_size=50)
+            card_purchases.extend(await all_pages(client.financials.business_cards, query))
+        purchases["business_card"] = monthly_totals(
+            (month_key(item.transaction_date), item.total_amount) for item in card_purchases
+        )
+
+        # 현금영수증 매입은 기간 전체의 가맹점별 합계만 준다. 월별 값은 한 달씩 조회해야 나온다.
+        cash_purchases = []
+        for month in months:
+            month_start = date.fromisoformat(f"{month}-01")
+            last_day = calendar.monthrange(month_start.year, month_start.month)[1]
+            month_end = min(month_start.replace(day=last_day), end)
+            query = CashReceiptPurchaseQuery(
+                start_date=month_start, end_date=month_end, page_size=50
+            )
+            merchants = await all_pages(client.financials.cash_receipt_purchases, query)
+            cash_purchases.extend((month, item.total_amount) for item in merchants)
+        purchases["cash_receipt"] = monthly_totals(cash_purchases)
+    finally:
+        await client.close()
+
+    report = build_report(months, sales, purchases)
+    payload = {
+        "year": year,
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "amount": "total_amount",
+        "invoice_date_basis": args.basis,
+        **report,
+    }
+    basis = {"written": "작성일", "issued": "발급일", "transmitted": "전송일"}[args.basis]
+    lines = [
+        f"{start} ~ {end} 매입매출 (합계금액·부가세 포함, 세금계산서 {basis} 기준)",
+        *render(report, monthly=monthly),
+    ]
+    emit(context, payload, lines)
+    return 0
+
+
 async def cmd_business_accounts(context: Context) -> int:
     client, _ = await session_client(context.args)
     items, page_number = [], 1
@@ -938,6 +1048,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_cert_options(card_sales)
     card_sales.set_defaults(handler=cmd_card_sales)
+
+    revenue = sub.add_parser(
+        "revenue", help="매입매출 리포트(`revenue 2026` 월별+누계, `revenue -ytd 2026` 누계만)"
+    )
+    revenue.add_argument("year", nargs="?", type=int, help="연도(생략하면 올해)")
+    revenue.add_argument(
+        "-ytd",
+        "--ytd",
+        dest="ytd",
+        nargs="?",
+        type=int,
+        const=True,
+        metavar="YEAR",
+        help="월별 행 없이 누계만(연도 생략 시 올해)",
+    )
+    revenue.add_argument("-m", "--monthly", action="store_true", help="월별 행을 보여 줍니다")
+    revenue.add_argument(
+        "--basis",
+        default="written",
+        choices=["written", "issued", "transmitted"],
+        help="세금계산서 월 귀속 기준일(기본 작성일)",
+    )
+    add_cert_options(revenue)
+    revenue.set_defaults(handler=cmd_revenue)
 
     business_accounts = sub.add_parser("business-accounts", help="사업용계좌 신고현황")
     add_cert_options(business_accounts)
