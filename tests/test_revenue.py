@@ -18,9 +18,24 @@ from hometax_login.financials import (
     CashReceiptSalesSummary,
 )
 from hometax_login.invoices import TaxInvoice, TaxInvoicePage
-from hometax_login.revenue import build_report, month_keys, monthly_totals, render
+from hometax_login.revenue import (
+    build_counterparty_report,
+    build_report,
+    build_vat_report,
+    counterparty_key,
+    included_tax,
+    month_keys,
+    monthly_totals,
+    render,
+    render_counterparties,
+    render_vat,
+    vat_period,
+)
 
 EMPTY = AmountBreakdown(count=0, supply_amount=0, tax_amount=0, tax_exempt_amount=0, total_amount=0)
+JANUARY_DEDUCTIBLE = AmountBreakdown(
+    count=2, supply_amount=30_000, tax_amount=3_000, tax_exempt_amount=0, total_amount=33_000
+)
 
 
 def invoice(written: str, issued: str, total: int) -> TaxInvoice:
@@ -130,7 +145,7 @@ class FakeFinancials:
         )
 
     async def business_cards(self, query):
-        self.calls.append(("business_cards", query.start_date))
+        self.calls.append(("business_cards", query.start_date, query.deduction))
         items = []
         if query.start_date <= date(2025, 5, 15) <= query.end_date:
             items.append(
@@ -176,7 +191,7 @@ class FakeFinancials:
             total_count=len(items),
             has_next=False,
             eligible_total=EMPTY,
-            deductible=EMPTY,
+            deductible=JANUARY_DEDUCTIBLE if query.start_date.month == 1 else EMPTY,
             optional_non_deductible=EMPTY,
             mandatory_non_deductible=EMPTY,
             items=items,
@@ -355,6 +370,156 @@ def test_revenue_mode_rejects_two_different_years():
     args = cli.build_parser().parse_args(["revenue", "2025", "-ytd", "2024"])
     with pytest.raises(cli.CommandError):
         cli.revenue_mode(args)
+
+
+def test_included_tax_takes_the_tax_out_of_a_vat_inclusive_amount():
+    assert included_tax(9_900) == 900
+    assert included_tax(110_000) == 10_000
+    assert included_tax(0) == 0
+
+
+def test_vat_period_splits_each_half_into_preliminary_and_final_quarters():
+    start, end, quarters = vat_period(2026, 2)
+    assert (start, end) == (date(2026, 7, 1), date(2026, 12, 31))
+    assert quarters == [
+        ("7~9월 예정", ["2026-07", "2026-08", "2026-09"]),
+        ("10~12월 확정", ["2026-10", "2026-11", "2026-12"]),
+    ]
+    assert vat_period(2026, 1)[1] == date(2026, 6, 30)
+
+
+def test_vat_report_drops_quarters_without_started_months():
+    report = build_vat_report(
+        [("7~9월 예정", ["2026-07"]), ("10~12월 확정", [])],
+        {"tax_invoice": {"2026-07": 100}, "card": {}, "cash_receipt": {}},
+        {"tax_invoice": {"2026-07": 30}, "business_card": {}, "cash_receipt": {}},
+    )
+    assert [column["label"] for column in report["columns"]] == ["7~9월 예정", "합계"]
+    assert report["columns"][-1]["payable"] == 70
+    lines = render_vat(report)
+    assert lines[-1].startswith("예상 납부세액") and lines[-1].endswith("70")
+
+
+def test_counterparty_report_groups_blank_names_by_item_and_flags_recurring():
+    months = ["2026-01", "2026-02", "2026-03", "2026-04"]
+    rows = [
+        (counterparty_key(None, "임대"), "2026-01", 990),
+        (counterparty_key(None, "임대"), "2026-02", 990),
+        (counterparty_key(None, "임대"), "2026-03", 990),
+        (counterparty_key("예시상사", "자문"), "2026-04", 5_000),
+        (counterparty_key("예시상사", "자문"), "2026-04", 1_000),
+        (counterparty_key("범위밖", "x"), "2025-12", 7),
+    ]
+
+    report = build_counterparty_report(months, rows)
+
+    assert [row["counterparty"] for row in report] == ["예시상사", "(상호 없음) 임대"]
+    assert report[0]["count"] == 2 and report[0]["active_months"] == 1
+    assert report[0]["recurring"] is False
+    assert report[1]["recurring"] is True and report[1]["total"] == 2_970
+    monthly = render_counterparties(report, months, monthly=True)
+    assert "04월" in monthly[0]
+    assert monthly[-1].split()[-1] == "8,970"
+    assert len({cli_width(line) for line in monthly if not line.startswith("-")}) == 1
+
+
+def test_counterparty_report_counts_a_zero_amount_month_as_active():
+    months = ["2026-01", "2026-02", "2026-03"]
+    rows = [("A", "2026-01", 1_000), ("A", "2026-02", 1_000), ("A", "2026-03", 0)]
+
+    report = build_counterparty_report(months, rows)
+
+    assert report[0]["active_months"] == 3 and report[0]["recurring"] is True
+
+
+def test_revenue_by_counterparty_uses_only_tax_invoices(npki_home, fake_session, capsys):
+    assert cli.main(["--json", "revenue", "2025", "--by", "counterparty"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sales"][0]["counterparty"] == "예시상사"
+    assert payload["sales"][0]["total"] == 1_870_000
+    assert payload["sales"][0]["active_months"] == 3
+    assert payload["purchases"][0]["total"] == 330_000
+    assert not any(call[0] in {"card_sales", "cash_sales"} for call in fake_session[:-1])
+
+
+def test_vat_sums_tax_by_quarter(npki_home, fake_session, capsys):
+    assert cli.main(["--json", "vat", "2025-1"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    first, second, total = payload["columns"]
+    assert first["label"] == "1~3월 예정"
+    # 매출세액: 세금계산서 100,000 + 50,000, 카드 110,000÷11, 현금영수증 2,000
+    assert first["sales_tax"] == {
+        "tax_invoice": 150_000,
+        "card": 10_000,
+        "cash_receipt": 2_000,
+        "total": 162_000,
+    }
+    # 매입세액: 세금계산서 30,000, 현금영수증 공제 3,000
+    assert first["purchase_tax"]["total"] == 33_000
+    assert second["purchase_tax"]["business_card"] == 4_000
+    assert total["payable"] == 162_000 - 33_000 - 4_000
+    assert all(call[2] == "deductible" for call in fake_session if call[0] == "business_cards")
+
+
+def test_vat_converts_card_sales_once_per_month(npki_home, fake_session, monkeypatch, capsys):
+    original = FakeFinancials.card_sales
+
+    async def split_rows(self, query):
+        summary = await original(self, query)
+        first, second = summary.items
+        items = [
+            first.model_copy(update={"total_sales_amount": 95}),
+            second.model_copy(update={"total_sales_amount": 15}),
+        ]
+        return summary.model_copy(update={"items": items})
+
+    monkeypatch.setattr(FakeFinancials, "card_sales", split_rows)
+
+    assert cli.main(["--json", "vat", "2025-1"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    # 95 과 15 를 따로 환산하면 8 + 2 = 10 이 아니라 11 이 나온다. 합친 110 의 세액은 10.
+    assert payload["columns"][0]["sales_tax"]["card"] == 10
+
+
+def test_vat_takes_cash_purchase_totals_once_across_pages(
+    npki_home, fake_session, monkeypatch, capsys
+):
+    original = FakeFinancials.cash_receipt_purchases
+
+    async def two_pages(self, query):
+        page = await original(self, query)
+        return page.model_copy(update={"has_next": query.page == 1, "page": query.page})
+
+    monkeypatch.setattr(FakeFinancials, "cash_receipt_purchases", two_pages)
+
+    assert cli.main(["--json", "vat", "2025-1"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["columns"][0]["purchase_tax"]["cash_receipt"] == 3_000
+    pages = [call for call in fake_session if call[0] == "cash_purchases"]
+    assert len(pages) == 12
+
+
+@pytest.mark.parametrize(
+    "argv,message",
+    [
+        (["vat", "2026-3"], "YYYY-1"),
+        (["vat", "26-1"], "YYYY-1"),
+        (["vat", "1999-1"], "2000년 이후"),
+        (["vat", f"{date.today().year + 1}-1"], "아직 시작하지 않은"),
+    ],
+)
+def test_vat_rejects_bad_periods_before_login(npki_home, monkeypatch, capsys, argv, message):
+    async def unexpected_session(args):
+        raise AssertionError("session must not start")
+
+    monkeypatch.setattr(cli, "session_client", unexpected_session)
+
+    assert cli.main(argv) == 2
+    assert message in capsys.readouterr().err
 
 
 @pytest.fixture

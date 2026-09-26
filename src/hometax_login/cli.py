@@ -57,7 +57,20 @@ from .local_session import (
     save_session,
 )
 from .protocol import HometaxClient
-from .revenue import build_report, month_key, month_keys, monthly_totals, render
+from .revenue import (
+    build_counterparty_report,
+    build_report,
+    build_vat_report,
+    counterparty_key,
+    included_tax,
+    month_key,
+    month_keys,
+    monthly_totals,
+    render,
+    render_counterparties,
+    render_vat,
+    vat_period,
+)
 from .write_journal import WriteJournal
 
 MAX_MONTHS_PER_QUERY = 3
@@ -650,19 +663,68 @@ async def cmd_card_sales(context: Context) -> int:
     return 0
 
 
-async def all_pages(fetch, query) -> list:
-    items, page_number = [], 1
+async def collect_pages(fetch, query) -> list:
+    pages, page_number = [], 1
     while True:
         page = await fetch(query.model_copy(update={"page": page_number}))
-        items.extend(page.items)
+        pages.append(page)
         if not page.has_next:
-            return items
+            return pages
         page_number += 1
         if page_number > MAX_PAGES_PER_QUERY:
             raise CommandError(
                 f"페이지가 {MAX_PAGES_PER_QUERY}쪽을 넘었습니다. 기간을 좁혀 주세요."
             )
         await asyncio.sleep(PAGE_DELAY_SECONDS)
+
+
+async def all_pages(fetch, query) -> list:
+    return [item for page in await collect_pages(fetch, query) for item in page.items]
+
+
+async def fetch_invoices(client, start: date, end: date, direction: str, basis: str) -> list:
+    invoices = []
+    for span_start, span_end in split_periods(start, end):
+        query = InvoiceQuery(
+            start_date=span_start,
+            end_date=span_end,
+            direction=direction,
+            date_basis=basis,
+            page_size=50,
+        )
+        invoices.extend(await all_pages(client.invoices.list, query))
+    return invoices
+
+
+async def fetch_business_cards(client, start: date, end: date, deduction: str) -> list:
+    items = []
+    for span_start, span_end in split_periods(start, end):
+        query = BusinessCardQuery(
+            start_date=span_start, end_date=span_end, deduction=deduction, page_size=50
+        )
+        items.extend(await all_pages(client.financials.business_cards, query))
+    return items
+
+
+async def fetch_cash_purchase_months(client, months: list[str], end: date) -> list:
+    """현금영수증 매입은 기간 전체의 가맹점별 합계만 준다. 월별 값은 한 달씩 조회해야 나온다.
+    (월, 그 달의 쪽 목록)을 돌려준다 — 공제 합계는 모든 쪽에 같은 값으로 실려 온다."""
+    result = []
+    for month in months:
+        month_start = date.fromisoformat(f"{month}-01")
+        last_day = calendar.monthrange(month_start.year, month_start.month)[1]
+        month_end = min(month_start.replace(day=last_day), end)
+        query = CashReceiptPurchaseQuery(start_date=month_start, end_date=month_end, page_size=50)
+        result.append((month, await collect_pages(client.financials.cash_receipt_purchases, query)))
+    return result
+
+
+def invoice_month(item, basis: str) -> str:
+    return month_key(getattr(item, f"{basis}_date"))
+
+
+def quarter_of(day: date) -> int:
+    return (day.month - 1) // 3 + 1
 
 
 def year_range(year: int) -> tuple[date, date]:
@@ -682,33 +744,29 @@ def revenue_mode(args: argparse.Namespace) -> tuple[int, bool]:
     return year, ytd is None or args.monthly
 
 
+BASIS_LABEL = {"written": "작성일", "issued": "발급일", "transmitted": "전송일"}
+
+
 async def cmd_revenue(context: Context) -> int:
     args = context.args
     year, monthly = revenue_mode(args)
     start, end = year_range(year)
     months = month_keys(start, end)
+    basis = BASIS_LABEL[args.basis]
+    if args.by == "counterparty":
+        return await revenue_by_counterparty(context, start, end, months, monthly, basis)
     client, _ = await session_client(args)
     sales: dict[str, dict[str, int]] = {}
     purchases: dict[str, dict[str, int]] = {}
     try:
         for direction, table in (("sales", sales), ("purchases", purchases)):
-            invoices = []
-            for span_start, span_end in split_periods(start, end):
-                query = InvoiceQuery(
-                    start_date=span_start,
-                    end_date=span_end,
-                    direction=direction,
-                    date_basis=args.basis,
-                    page_size=50,
-                )
-                invoices.extend(await all_pages(client.invoices.list, query))
+            invoices = await fetch_invoices(client, start, end, direction, args.basis)
             table["tax_invoice"] = monthly_totals(
-                (month_key(getattr(item, f"{args.basis}_date")), item.total_amount)
-                for item in invoices
+                (invoice_month(item, args.basis), item.total_amount) for item in invoices
             )
 
         card_sales = await client.financials.card_sales(
-            CardSalesQuery(year=year, quarter_from=1, quarter_to=(end.month - 1) // 3 + 1)
+            CardSalesQuery(year=year, quarter_from=1, quarter_to=quarter_of(end))
         )
         sales["card"] = monthly_totals(
             (item.month, item.total_sales_amount) for item in card_sales.items
@@ -718,26 +776,17 @@ async def cmd_revenue(context: Context) -> int:
             (item.month, item.total_amount) for item in cash_sales.items
         )
 
-        card_purchases = []
-        for span_start, span_end in split_periods(start, end):
-            query = BusinessCardQuery(start_date=span_start, end_date=span_end, page_size=50)
-            card_purchases.extend(await all_pages(client.financials.business_cards, query))
+        card_purchases = await fetch_business_cards(client, start, end, "all")
         purchases["business_card"] = monthly_totals(
             (month_key(item.transaction_date), item.total_amount) for item in card_purchases
         )
-
-        # 현금영수증 매입은 기간 전체의 가맹점별 합계만 준다. 월별 값은 한 달씩 조회해야 나온다.
-        cash_purchases = []
-        for month in months:
-            month_start = date.fromisoformat(f"{month}-01")
-            last_day = calendar.monthrange(month_start.year, month_start.month)[1]
-            month_end = min(month_start.replace(day=last_day), end)
-            query = CashReceiptPurchaseQuery(
-                start_date=month_start, end_date=month_end, page_size=50
-            )
-            merchants = await all_pages(client.financials.cash_receipt_purchases, query)
-            cash_purchases.extend((month, item.total_amount) for item in merchants)
-        purchases["cash_receipt"] = monthly_totals(cash_purchases)
+        cash_months = await fetch_cash_purchase_months(client, months, end)
+        purchases["cash_receipt"] = monthly_totals(
+            (month, item.total_amount)
+            for month, pages in cash_months
+            for page in pages
+            for item in page.items
+        )
     finally:
         await client.close()
 
@@ -749,10 +798,131 @@ async def cmd_revenue(context: Context) -> int:
         "invoice_date_basis": args.basis,
         **report,
     }
-    basis = {"written": "작성일", "issued": "발급일", "transmitted": "전송일"}[args.basis]
     lines = [
         f"{start} ~ {end} 매입매출 (합계금액·부가세 포함, 세금계산서 {basis} 기준)",
         *render(report, monthly=monthly),
+    ]
+    emit(context, payload, lines)
+    return 0
+
+
+async def revenue_by_counterparty(
+    context: Context, start: date, end: date, months: list[str], monthly: bool, basis: str
+) -> int:
+    """전자세금계산서만 거래처를 준다. 카드·현금영수증 매출은 월 합계뿐이라 빠진다."""
+    args = context.args
+    client, _ = await session_client(args)
+    reports = {}
+    try:
+        for direction in ("sales", "purchases"):
+            invoices = await fetch_invoices(client, start, end, direction, args.basis)
+            reports[direction] = build_counterparty_report(
+                months,
+                (
+                    (
+                        counterparty_key(item.counterparty_name, item.item_name),
+                        invoice_month(item, args.basis),
+                        item.total_amount,
+                    )
+                    for item in invoices
+                ),
+            )
+    finally:
+        await client.close()
+    payload = {
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "amount": "total_amount",
+        "invoice_date_basis": args.basis,
+        "recurring_months": 3,
+        **reports,
+    }
+    lines = [
+        f"{start} ~ {end} 거래처별 세금계산서 (합계금액·부가세 포함, {basis} 기준, "
+        "* = 3개월 이상 반복)",
+    ]
+    for direction, title in (("sales", "매출"), ("purchases", "매입")):
+        lines += ["", f"[{title}]"]
+        if reports[direction]:
+            lines += render_counterparties(reports[direction], months, monthly=monthly)
+        else:
+            lines.append("자료 없음")
+    emit(context, payload, lines)
+    return 0
+
+
+def parse_vat_period(value: str | None) -> tuple[int, int]:
+    today = today_kst()
+    if value is None:
+        return today.year, 1 if today.month <= 6 else 2
+    match = re.fullmatch(r"(\d{4})-([12])", value)
+    if not match:
+        raise CommandError(f"과세기간은 YYYY-1 또는 YYYY-2 형식이어야 합니다: {value}")
+    year, half = int(match[1]), int(match[2])
+    if year < 2000:
+        raise CommandError("2000년 이후 연도만 조회할 수 있습니다.")
+    if date(year, 1 if half == 1 else 7, 1) > today:
+        raise CommandError("아직 시작하지 않은 과세기간입니다.")
+    return year, half
+
+
+async def cmd_vat(context: Context) -> int:
+    args = context.args
+    year, half = parse_vat_period(args.period)
+    start, period_end, quarters = vat_period(year, half)
+    end = min(period_end, today_kst())
+    started = month_key(end)
+    quarters = [(label, [m for m in months if m <= started]) for label, months in quarters]
+    months = [month for _, quarter_months in quarters for month in quarter_months]
+    client, _ = await session_client(args)
+    sales: dict[str, dict[str, int]] = {}
+    purchases: dict[str, dict[str, int]] = {}
+    try:
+        for direction, table in (("sales", sales), ("purchases", purchases)):
+            invoices = await fetch_invoices(client, start, end, direction, "written")
+            table["tax_invoice"] = monthly_totals(
+                (invoice_month(item, "written"), item.tax_amount) for item in invoices
+            )
+
+        card_sales = await client.financials.card_sales(
+            CardSalesQuery(year=year, quarter_from=quarter_of(start), quarter_to=quarter_of(end))
+        )
+        # 같은 달에 카드사 제출분과 대행분이 따로 오므로 달별로 합친 뒤 한 번만 환산한다.
+        # 봉사료가 결제액에 들어 있는지 확인하지 못해 빼지 않는다(세액을 적게 잡지 않는 쪽).
+        card_months = monthly_totals(
+            (item.month, item.total_sales_amount) for item in card_sales.items
+        )
+        sales["card"] = {month: included_tax(amount) for month, amount in card_months.items()}
+        cash_sales = await client.financials.cash_receipt_sales(YearQuery(year=year))
+        sales["cash_receipt"] = monthly_totals(
+            (item.month, item.tax_amount) for item in cash_sales.items
+        )
+
+        cards = await fetch_business_cards(client, start, end, "deductible")
+        purchases["business_card"] = monthly_totals(
+            (month_key(item.transaction_date), item.tax_amount) for item in cards
+        )
+        cash_months = await fetch_cash_purchase_months(client, months, end)
+        purchases["cash_receipt"] = {
+            month: pages[0].deductible.tax_amount for month, pages in cash_months
+        }
+    finally:
+        await client.close()
+
+    report = build_vat_report(quarters, sales, purchases)
+    payload = {
+        "period": f"{year}-{half}",
+        "range": {"start": start.isoformat(), "end": end.isoformat()},
+        "invoice_date_basis": "written",
+        **report,
+    }
+    lines = [
+        f"{year}년 {half}기 예상 부가세 ({start} ~ {end}, 세금계산서 작성일 기준)",
+        *render_vat(report),
+        "",
+        "참고용 추정입니다. 카드매출 세액은 합계금액÷11 환산,",
+        "사업용카드·현금영수증 매입은 홈택스 공제분류 기준입니다.",
+        "세금계산서 매입의 불공제 대상(접대비·비영업용 승용차 등),",
+        "개인사업자 신용카드매출 세액공제, 예정고지·기납부세액, 가산세는 반영하지 않았습니다.",
     ]
     emit(context, payload, lines)
     return 0
@@ -1065,6 +1235,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     revenue.add_argument("-m", "--monthly", action="store_true", help="월별 행을 보여 줍니다")
     revenue.add_argument(
+        "--by", choices=["counterparty"], help="counterparty: 세금계산서 거래처별 월 표"
+    )
+    revenue.add_argument(
         "--basis",
         default="written",
         choices=["written", "issued", "transmitted"],
@@ -1072,6 +1245,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_cert_options(revenue)
     revenue.set_defaults(handler=cmd_revenue)
+
+    vat = sub.add_parser("vat", help="예상 부가세(과세기간 YYYY-1|YYYY-2, 생략 시 현재 기간)")
+    vat.add_argument("period", nargs="?", help="과세기간 예: 2026-2")
+    add_cert_options(vat)
+    vat.set_defaults(handler=cmd_vat)
 
     business_accounts = sub.add_parser("business-accounts", help="사업용계좌 신고현황")
     add_cert_options(business_accounts)

@@ -53,6 +53,8 @@ hometax login                              # 인증서 선택 → 로그인 → 
 hometax summary --ytd                      # 올해 매출 합계
 hometax summary --ytd --direction purchases
 hometax revenue 2026                       # 매입매출 월별 + 누계
+hometax revenue 2026 --by counterparty     # 거래처별 월 표
+hometax vat 2026-2                         # 예상 부가세
 hometax invoices --from 2026-07-01 --to 2026-09-12 --json
 hometax counterparties --name 휴맥스
 hometax cards --ytd --deduction deductible
@@ -97,13 +99,15 @@ hometax status / hometax logout
 `business-accounts`는 신고된 계좌의 등록 정보만 반환하며 입출금 거래내역은 포함하지 않습니다.
 상세한 매개변수와 API 응답은 [카드·현금영수증·사업용계좌 조회](docs/FINANCIALS.md)를 보세요.
 
-## 0.7.0 매입매출 리포트
+## 0.7.0~0.8.0 매입매출·거래처별·예상 부가세
 
 ```bash
 hometax revenue 2026             # 2026년 월별 행 + 누계(연도 생략 시 올해)
 hometax revenue -ytd 2026        # 월별 행 없이 누계만(연도 생략 시 올해)
 hometax revenue 2025             # 지난해 1~12월
 hometax revenue 2026 --basis issued   # 세금계산서를 발급일 기준으로 월에 귀속
+hometax revenue 2026 --by counterparty   # 세금계산서 거래처 × 월, * = 3개월 이상 반복
+hometax vat 2026-2               # 2026년 2기 예상 부가세(생략 시 현재 과세기간)
 ```
 
 매출은 세금계산서·신용카드 매출·현금영수증 매출, 매입은 세금계산서·사업용카드·현금영수증
@@ -112,6 +116,14 @@ hometax revenue 2026 --basis issued   # 세금계산서를 발급일 기준으�
 때문입니다. 세금계산서는 기본으로 부가세 귀속 기준인 **작성일**의 달에 넣습니다. 은행 입출금·
 PG 정산·종이 증빙은 홈택스에 없으므로 빠집니다. 자세한 기준은 [FINANCIALS](docs/FINANCIALS.md#매입매출-리포트)를
 보세요.
+
+`--by counterparty`는 전자세금계산서를 거래처별로 묶어 월별 금액·건수·거래 개월 수를 보여 줍니다.
+3개월 이상 거래가 있는 거래처에 `*`를 붙여 임대료·관리비 같은 반복 거래와 일회성 거래를 가릅니다.
+카드·현금영수증 매출은 거래처 없이 월 합계만 오므로 이 표에는 들어가지 않습니다.
+
+`vat`는 과세기간(1기 1~6월, 2기 7~12월)의 매출세액과 공제 매입세액을 예정·확정 분기로 나눠
+예상 납부세액을 냅니다. 참고용 추정이며 세금계산서 불공제 매입, 개인사업자 신용카드매출 세액공제,
+예정고지·기납부세액, 가산세는 반영하지 않습니다.
 
 ## 쓰기 — 미리보기가 기본입니다
 
