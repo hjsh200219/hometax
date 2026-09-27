@@ -90,14 +90,21 @@ def _left(text: str, width: int) -> str:
     return text + " " * (width - _width(text))
 
 
-def table(headers: list[str], cells: list[list[str]], *, rules_before: set[int] = frozenset()):
-    """첫 열은 왼쪽, 나머지는 오른쪽 정렬. 한글은 두 칸으로 센다."""
+def table(
+    headers: list[str],
+    cells: list[list[str]],
+    *,
+    rules_before: set[int] = frozenset(),
+    left: int = 1,
+):
+    """앞 left 개 열은 왼쪽, 나머지는 오른쪽 정렬. 한글은 두 칸으로 센다."""
     widths = [max(_width(line[i]) for line in [headers, *cells]) for i in range(len(headers))]
 
     def line(values: list[str]) -> str:
-        first = _left(values[0], widths[0])
-        rest = (_right(value, width) for value, width in zip(values[1:], widths[1:], strict=True))
-        return "  ".join([first, *rest])
+        return "  ".join(
+            _left(value, width) if index < left else _right(value, width)
+            for index, (value, width) in enumerate(zip(values, widths, strict=True))
+        )
 
     rule = "-" * _width(line(headers))
     lines = [line(headers), rule]

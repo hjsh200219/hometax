@@ -1,10 +1,18 @@
 ---
 created: 2026-09-27T09:30:00+09:00
 project: hometax
-summary: 0.8.0 예상 부가세(vat)·거래처별 표(revenue --by counterparty) 추가, 373개 테스트, 은행 fast 경로 논의 중
+summary: 0.9.0 여러 사업자(list·--company·alias·인증서별 세션), 386개 테스트. 세무대리인·은행 fast 는 보류/결정 대기
 ---
 
 ## Session Digest
+
+0.9.0: `hometax list`(번호·인증서·종류 개인/사업자·별칭·만료·세션), 모든 조회에 `--company <번호|별칭|상호 일부>`,
+`hometax alias <이름> <번호>`, 비밀번호 `HOMETAX_PW_<별칭>` → `HOMETAX_PW`, 세션 `~/.hometax/sessions/<지문16>.json`.
+0.8.1 에서 --cert 로 사업자를 바꿔도 캐시 세션이 직전 사업자로 조회되던 버그를 고쳤다.
+독립 리뷰 HIGH 2건(기본값 없는 비대화형 세션 재사용 회귀, TOML 제어문자 이스케이프) 수정·뮤테이션 확인.
+개인 인증서(`이름()…`)는 로그인만 되고 사업자 자료는 BUSINESS_REQUIRED. 세무대리인 로그인은 계정·국세청 사전협의가
+없어 보류(참고: myjung/hometax-agent-client 도 고객별 세션 방식, 세무대리 로그인 없음).
+
 
 0.8.0: `hometax vat [YYYY-1|YYYY-2]`(예정·확정 분기별 매출세액−공제 매입세액)와
 `hometax revenue [YYYY] --by counterparty`(세금계산서 거래처×월, 3개월 이상 반복 `*`)를 추가했습니다.

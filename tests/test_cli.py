@@ -165,7 +165,7 @@ def test_read_password_prefers_the_environment_and_refuses_to_block(npki, monkey
 
 def test_status_and_logout_report_a_missing_session(npki, capsys):
     assert cli.main(["--json", "status"]) == 1
-    assert json.loads(capsys.readouterr().out) == {"active": False}
+    assert json.loads(capsys.readouterr().out) == {"active": []}
 
     assert cli.main(["logout"]) == 0
     assert "지웠습니다" in capsys.readouterr().out
@@ -444,8 +444,8 @@ def test_cash_purchase_cli_does_not_repeat_period_totals_for_every_page(npki, mo
     assert payload["eligible_total"]["total_amount"] == 1100
 
 
-def test_session_client_drops_a_cached_session_of_another_certificate(npki, monkeypatch):
-    """사업자 A 세션이 살아 있어도 --cert 로 B 를 고르면 B 로 새로 로그인해야 한다."""
+def test_session_client_keeps_a_separate_session_per_certificate(npki, monkeypatch):
+    """사업자 A 세션이 살아 있어도 B 를 고르면 B 세션을 찾고, 없으면 B 로 로그인한다."""
     first = write_certificate(npki / "a", common_name="가사업자")
     second = write_certificate(npki / "b", common_name="나사업자")
     entries = {entry.cert_path.parent.name: entry for entry in discover()}
@@ -459,13 +459,13 @@ def test_session_client_drops_a_cached_session_of_another_certificate(npki, monk
         async def close(self):
             pass
 
-    monkeypatch.setattr(
-        cli,
-        "load_session",
-        lambda: {"cookies": {}, "cert_fingerprint": entries["a"].fingerprint},
-    )
+    def fake_load(fingerprint):
+        if fingerprint == entries["a"].fingerprint:
+            return {"cookies": {}, "cert_fingerprint": fingerprint}
+        return None
+
+    monkeypatch.setattr(cli, "load_session", fake_load)
     monkeypatch.setattr(cli, "client_from_session", lambda body: FakeClient())
-    monkeypatch.setattr(cli, "clear_session", lambda: events.append("cleared"))
 
     async def fake_login(entry, args):
         events.append(("login", entry.cert_path.parent.name))
@@ -477,8 +477,197 @@ def test_session_client_drops_a_cached_session_of_another_certificate(npki, monk
     import asyncio
 
     asyncio.run(cli.session_client(parse(["summary", "--ytd", "--cert", str(second)])))
-    assert events == ["cleared", ("login", "b")]
+    assert events == [("login", "b")]
 
     events.clear()
-    asyncio.run(cli.session_client(parse(["summary", "--ytd", "--cert", str(first)])))
+    asyncio.run(cli.session_client(parse(["summary", "--ytd", "--company", "가사업자"])))
     assert events == ["reused"]
+    assert first.name == "a"
+
+
+def test_resolve_company_by_alias_number_and_unique_name(npki):
+    from hometax_login.cert_discovery import resolve_company, save_alias
+
+    write_certificate(npki / "a", common_name="에스에이치컨설팅")
+    write_certificate(npki / "b", common_name="에스에이치랩")
+    write_certificate(npki / "c", common_name="다른상사")
+    entries = discover()
+    listed = [entry.common_name for entry in cli.ordered(entries)]
+    assert listed == sorted(listed)
+
+    assert resolve_company("2", entries).common_name == listed[1]
+    assert resolve_company("컨설팅", entries).common_name == "에스에이치컨설팅"
+    with pytest.raises(LookupError, match="여러 사업자"):
+        resolve_company("에스에이치", entries)
+    with pytest.raises(LookupError, match="없습니다"):
+        resolve_company("없는회사", entries)
+    with pytest.raises(LookupError, match="1~3"):
+        resolve_company("9", entries)
+
+    lab = next(entry for entry in entries if entry.common_name == "에스에이치랩")
+    save_alias("lab", lab)
+    assert resolve_company("lab", entries) == lab
+
+
+def test_saving_the_default_certificate_keeps_aliases(npki):
+    from hometax_login.cert_discovery import load_aliases, save_alias
+
+    write_certificate(npki / "a", common_name="가사업자")
+    entry = discover()[0]
+    save_alias("ga", entry)
+    save_selection(entry)
+    assert load_aliases() == {"ga": entry.fingerprint}
+    assert load_selection()["fingerprint"] == entry.fingerprint
+
+
+def test_list_numbers_companies_and_marks_default_and_alias(npki, capsys):
+    write_certificate(npki / "a", common_name="가사업자")
+    write_certificate(npki / "b", common_name="나사업자")
+    write_certificate(npki / "c", common_name="다만료", days_left=-1)
+    save_selection(next(e for e in discover() if e.common_name == "나사업자"))
+    assert cli.main(["alias", "na", "나사업자"]) == 0
+    assert "HOMETAX_PW_NA" in capsys.readouterr().out
+
+    assert cli.main(["--json", "list"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert [(r["number"], r["common_name"]) for r in rows] == [
+        (1, "가사업자"),
+        (2, "나사업자"),
+        (3, "다만료"),
+    ]
+    assert rows[1]["default"] is True and rows[1]["aliases"] == ["na"]
+    assert rows[2]["expired"] is True
+
+    assert cli.main(["list"]) == 0
+    text = capsys.readouterr().out
+    assert "--company" in text and "만료" in text
+
+
+def test_company_option_refuses_an_expired_certificate(npki, monkeypatch, capsys):
+    write_certificate(npki / "c", common_name="다만료", days_left=-1)
+
+    async def unexpected_login(entry, args):
+        raise AssertionError("must not log in")
+
+    monkeypatch.setattr(cli, "login_with", unexpected_login)
+    assert cli.main(["summary", "--ytd", "--company", "1"]) == 2
+    assert "만료" in capsys.readouterr().err
+
+
+def test_alias_password_env_wins_over_the_shared_one(npki, monkeypatch):
+    from hometax_login.cert_discovery import save_alias
+
+    write_certificate(npki / "a", common_name="가사업자")
+    entry = discover()[0]
+    save_alias("ga-1", entry)
+    monkeypatch.setenv("HOMETAX_PW", "shared")
+    monkeypatch.setenv("HOMETAX_PW_GA_1", "own")
+
+    assert cli.read_password(entry) == "own"
+    monkeypatch.delenv("HOMETAX_PW_GA_1")
+    assert cli.read_password(entry) == "shared"
+
+
+def test_alias_rejects_names_that_cannot_become_env_vars(npki, capsys):
+    write_certificate(npki / "a", common_name="가사업자")
+    assert cli.main(["alias", "가", "1"]) == 2
+    assert cli.main(["alias", "ok", "--remove"]) == 2
+    assert cli.main(["alias", "ok", "1"]) == 0
+    assert cli.main(["alias", "ok", "--remove"]) == 0
+
+
+def test_sessions_are_stored_per_certificate_and_logout_clears_all(npki, capsys):
+    import httpx
+
+    from hometax_login.local_session import load_session, save_session, session_path
+    from hometax_login.protocol import HometaxClient
+
+    client = HometaxClient(transport=httpx.MockTransport(lambda request: None))
+    save_session(client, {"user_name": "가"}, cert_fingerprint="a" * 64)
+    save_session(client, {"user_name": "나"}, cert_fingerprint="b" * 64)
+    legacy = session_path().parent.parent / "session.json"
+    legacy.write_text("{}", encoding="utf-8")
+
+    assert load_session("a" * 64)["identity"] == {"user_name": "가"}
+    assert load_session("b" * 64)["identity"] == {"user_name": "나"}
+    assert session_path("a" * 64) != session_path("b" * 64)
+
+    assert cli.main(["logout"]) == 0
+    assert "3개" in capsys.readouterr().out
+    assert load_session("a" * 64) is None and not legacy.exists()
+
+
+def test_display_name_drops_the_serial_and_marks_personal_certificates():
+    from hometax_login.cert_discovery import display_name, is_personal
+
+    assert display_name("예시컨설팅(HONG GIL DONG)00206822026042423395083") == (
+        "예시컨설팅(HONG GIL DONG)"
+    )
+    assert display_name("홍길동()0020049201507212477229") == "홍길동"
+    assert is_personal("홍길동()0020049201507212477229")
+    assert not is_personal("예시컨설팅(HONG GIL DONG)00206822026042423395083")
+
+
+def test_session_reused_without_company_when_it_is_the_only_live_one(npki, monkeypatch):
+    """--company 로만 로그인해 기본값이 없어도, 비대화형 후속 명령이 그 세션을 쓴다."""
+    write_certificate(npki / "a", common_name="가사업자")
+    write_certificate(npki / "b", common_name="나사업자")
+    target = next(entry for entry in discover() if entry.common_name == "나사업자")
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(cli, "active_sessions", lambda: [{"cert_fingerprint": target.fingerprint}])
+    seen = []
+
+    class FakeClient:
+        async def verify(self):
+            return {"user_name": "나"}
+
+        async def close(self):
+            pass
+
+    def fake_load(fingerprint):
+        seen.append(fingerprint)
+        return {"cookies": {}, "cert_fingerprint": fingerprint}
+
+    monkeypatch.setattr(cli, "load_session", fake_load)
+    monkeypatch.setattr(cli, "client_from_session", lambda body: FakeClient())
+
+    import asyncio
+
+    asyncio.run(cli.session_client(parse(["summary", "--ytd"])))
+    assert seen == [target.fingerprint]
+
+    monkeypatch.setattr(cli, "active_sessions", lambda: [])
+    with pytest.raises(cli.CommandError, match="대화형"):
+        asyncio.run(cli.session_client(parse(["summary", "--ytd"])))
+
+
+def test_config_survives_control_characters_in_names(npki):
+    from hometax_login.cert_discovery import (
+        load_aliases,
+        load_config,
+        save_alias,
+        save_config,
+    )
+
+    write_certificate(npki / "a", common_name="가사업자")
+    entry = discover()[0]
+    save_config({"certificate": {"path": 'C:\\\\x\n"y"\t\x7fz', "fingerprint": "f"}})
+    assert load_config()["certificate"]["path"] == 'C:\\\\x\n"y"\t\x7fz'
+    save_alias("ga", entry)
+    assert load_config()["certificate"]["fingerprint"] == "f"
+    assert load_aliases() == {"ga": entry.fingerprint}
+
+
+def test_alias_refuses_names_whose_password_env_would_clash(npki, capsys):
+    write_certificate(npki / "a", common_name="가사업자")
+    write_certificate(npki / "b", common_name="나사업자")
+    assert cli.main(["alias", "a-b", "1"]) == 0
+    assert cli.main(["alias", "a_b", "2"]) == 2
+    assert "HOMETAX_PW_A_B" in capsys.readouterr().err
+    assert cli.main(["alias", "a-b", "--remove", "1"]) == 2
+
+
+def test_company_and_cert_together_are_rejected(npki, capsys):
+    folder = write_certificate(npki / "a", common_name="가사업자")
+    assert cli.main(["summary", "--ytd", "--company", "1", "--cert", str(folder)]) == 2
+    assert "함께 쓸 수 없습니다" in capsys.readouterr().err

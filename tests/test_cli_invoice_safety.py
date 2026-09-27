@@ -31,7 +31,7 @@ def setup_cli(monkeypatch, tmp_path, *, yes=True):
     cert.write_bytes(b"fixture")
     entry = Namespace(cert_path=cert, key_path=cert)
     monkeypatch.setattr(cli, "pick_certificate", lambda args: entry)
-    monkeypatch.setattr(cli, "read_password", lambda: "synthetic-password")
+    monkeypatch.setattr(cli, "read_password", lambda *args: "synthetic-password")
     monkeypatch.setattr(cli, "load_certificate", lambda *args: material)
     monkeypatch.setattr(cli, "build_client", lambda: client)
     monkeypatch.setattr(cli, "save_session", lambda *args, **kwargs: None)

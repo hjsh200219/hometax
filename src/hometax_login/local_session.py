@@ -1,8 +1,8 @@
 """CLI용 로컬 세션 캐시.
 
-명령마다 인증서 로그인을 다시 하지 않도록 홈택스 세션 쿠키를
-`$HOMETAX_HOME/session.json`(기본 `~/.hometax/session.json`, 0600)에 보관한다.
-인증서·비밀번호는 저장하지 않으며, 만료된 파일은 읽지 않는다.
+명령마다 인증서 로그인을 다시 하지 않도록 홈택스 세션 쿠키를 인증서마다 따로
+`$HOMETAX_HOME/sessions/<지문 앞 16자>.json`(0600)에 보관한다. 사업자를 오가도 서로의
+세션을 덮지 않는다. 인증서·비밀번호는 저장하지 않으며, 만료된 파일은 읽지 않는다.
 
 HTTP API 서버는 이 모듈을 쓰지 않는다. 서버는 쿠키를 프로세스 메모리에만 둔다.
 """
@@ -18,11 +18,13 @@ from .cert_discovery import home_dir
 from .protocol import HometaxClient
 
 DEFAULT_TTL_SECONDS = 600
-SESSION_FILE = "session.json"
+SESSION_DIR = "sessions"
+LEGACY_SESSION_FILE = "session.json"
+UNBOUND = "unbound"
 
 
-def session_path() -> Path:
-    return home_dir() / SESSION_FILE
+def session_path(cert_fingerprint: str | None = None) -> Path:
+    return home_dir() / SESSION_DIR / f"{(cert_fingerprint or UNBOUND)[:16]}.json"
 
 
 def default_ttl() -> int:
@@ -41,8 +43,8 @@ def save_session(
     *,
     cert_fingerprint: str | None = None,
 ) -> Path:
-    """cert_fingerprint 는 어느 인증서로 연 세션인지 표시할 뿐 인증 근거가 아니다.
-    --cert 로 다른 인증서를 고르면 세션을 버리는 데만 쓴다."""
+    """cert_fingerprint 는 세션 파일을 인증서별로 나누는 열쇠다. 인증 근거는 아니다
+    (쓰기는 매번 인증서로 다시 로그인한다)."""
     ttl = default_ttl() if ttl_seconds is None else ttl_seconds
     now = time.time()
     body = {
@@ -52,19 +54,23 @@ def save_session(
         "saved_at": now,
         "expires_at": now + ttl,
     }
-    directory = home_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    os.chmod(directory, 0o700)
-    path = session_path()
+    path = session_path(cert_fingerprint)
+    for directory in (home_dir(), path.parent):
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
     path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
     os.chmod(path, 0o600)
     return path
 
 
-def load_session() -> dict | None:
+def load_session(cert_fingerprint: str | None = None) -> dict | None:
     """만료·손상·부재면 None. 호출자는 새로 로그인하면 된다."""
+    return _read(session_path(cert_fingerprint))
+
+
+def _read(path: Path) -> dict | None:
     try:
-        body = json.loads(session_path().read_text(encoding="utf-8"))
+        body = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(body, dict) or not isinstance(body.get("cookies"), dict):
@@ -75,8 +81,30 @@ def load_session() -> dict | None:
     return body
 
 
-def clear_session() -> None:
-    session_path().unlink(missing_ok=True)
+def clear_session(cert_fingerprint: str | None = None) -> None:
+    session_path(cert_fingerprint).unlink(missing_ok=True)
+
+
+def clear_all_sessions() -> int:
+    """모든 인증서의 세션과 0.8 이전 단일 세션 파일을 지운다. 지운 개수."""
+    paths = [home_dir() / LEGACY_SESSION_FILE]
+    directory = home_dir() / SESSION_DIR
+    if directory.is_dir():
+        paths += sorted(directory.glob("*.json"))
+    removed = 0
+    for path in paths:
+        if path.exists():
+            path.unlink()
+            removed += 1
+    return removed
+
+
+def active_sessions() -> list[dict]:
+    """살아 있는 세션 본문들(만료분 제외)."""
+    directory = home_dir() / SESSION_DIR
+    if not directory.is_dir():
+        return []
+    return [body for path in sorted(directory.glob("*.json")) if (body := _read(path))]
 
 
 def client_from_session(body: dict | None) -> HometaxClient:

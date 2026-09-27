@@ -25,6 +25,7 @@ Python 라이브러리, 로컬 HTTP API 세 가지 경로를 제공하며 셋 �
 | 사업용카드·카드매출·현금영수증·사업용계좌 조회 | 승인된 본인 계정으로 응답 계약 확인(2026-09-12) |
 | 거래처 등록·수정·삭제 | 미리보기만 실계정 확인. 실제 반영은 미검증 |
 | 발행·정정·취소 | 모의 HTTP와 실제 XML 서명까지만. **실제 전송 호환성 미검증** |
+| 여러 사업자(`list`·`--company`·별칭·인증서별 세션) | 사업자 인증서 1건·개인 인증서 1건으로 확인(2026-09-27). 사업자 인증서 2건 동시는 미검증 |
 | 플랫폼 | macOS Apple Silicon에서 검증. 그 외는 미검증 |
 | 인증서 | 위 1건으로만 확인. 다른 인증서 호환성은 보장하지 않음 |
 
@@ -48,7 +49,7 @@ uv sync --locked && uv run hometax certs
 
 ```bash
 export HOMETAX_PW='<인증서 비밀번호>'      # 생략하면 실행할 때 입력받습니다
-hometax certs                              # 인증서 목록(만료분 표시)
+hometax list                               # 조회할 수 있는 사업자(인증서) 목록
 hometax login                              # 인증서 선택 → 로그인 → 세션 10분
 hometax summary --ytd                      # 올해 매출 합계
 hometax summary --ytd --direction purchases
@@ -63,6 +64,7 @@ hometax card-sales --year 2026 --quarter-from 1 --quarter-to 3
 hometax cash-purchases --from 2026-07-01 --to 2026-09-12
 hometax cash-sales --year 2026
 hometax business-accounts
+hometax revenue -ytd 2026 --company 2     # 다른 사업자로(목록 번호·별칭·상호 일부)
 hometax status / hometax logout
 ```
 
@@ -77,8 +79,33 @@ hometax status / hometax logout
 - 고른 인증서는 `~/.hometax/config.toml`(0600)에 **경로와 지문**으로 기억합니다. 같은 경로의
   인증서가 갱신되면 지문이 달라 다시 묻습니다. `--choose`로 언제든 다시 고릅니다.
 - 비밀번호는 저장하지 않고 명령 인자로도 받지 않습니다. `HOMETAX_PW` 또는 프롬프트뿐입니다.
-- 조회 세션은 어느 인증서로 열었는지 함께 기억합니다. `--cert`로 다른 사업자 인증서를 고르면 남아 있는
-  세션을 버리고 새로 로그인합니다(직전 사업자 자료가 섞이지 않게).
+
+### 여러 사업자
+
+사업자를 여럿 운영하면 사업자마다 인증서를 NPKI 폴더에 두고 `--company`로 고릅니다.
+
+```bash
+hometax list                          # 번호·인증서·종류(사업자/개인)·별칭·만료일·상태
+hometax alias shc 3                   # 3번에 별칭 shc
+hometax vat 2026-2 --company shc      # 별칭으로
+hometax revenue 2026 --company 2      # 목록 번호로
+hometax summary --ytd --company 컨설팅 # 상호 일부(한 곳에만 맞을 때)
+hometax alias shc --remove
+```
+
+- `--company`는 `--cert`와 함께 쓸 수 없고, 이번 실행만 바꿉니다. 인자 없이 쓰는 기본 사업자는 `hometax login --choose`로
+  바꿉니다. 목록 번호는 상호순이라 인증서를 더하거나 빼면 바뀝니다. 오래 쓸 사업자는 별칭을 붙이세요.
+- 조회 세션은 인증서마다 따로 10분 보관합니다(`~/.hometax/sessions/`). 사업자를 오가도 서로의
+  세션을 덮지 않고, 다른 사업자 자료가 섞이지 않습니다. `hometax status`가 사업자별 남은 시간을,
+  `hometax logout`이 전부를(`--company`면 그 사업자만) 지웁니다.
+  사업자를 지정하지 않으면 기본 사업자, 기본이 없으면 살아 있는 세션이 하나뿐일 때 그 사업자를 씁니다.
+- 사업자마다 인증서 비밀번호가 다르면 별칭별 환경변수를 씁니다. 별칭 `shc`면 `HOMETAX_PW_SHC`를
+  먼저 보고, 없으면 `HOMETAX_PW`, 그다음 프롬프트입니다.
+- **개인 공동인증서**(`이름()…`)는 로그인은 되지만 사업자 자료는 조회되지 않습니다
+  (`조회할 사업자로 로그인하거나 전환하세요`). 사업자용 인증서를 쓰세요. 홈택스의 사업자 전환은
+  지원하지 않습니다.
+- **세무대리인 로그인(수임납세자 조회)은 지원하지 않습니다.** 세무사가 고객 인증서를 받아 이 도구로
+  조회하는 것은 기술적으로는 위와 같지만, 대리인의 자동화 조회는 국세청 사전협의 대상입니다(맨 위 안내).
 
 ## 0.6.0 금융자료 조회
 

@@ -1,6 +1,6 @@
 """공동인증서(NPKI) 탐색과 선택 기억.
 
-인증서 파일만 읽으므로 비밀번호가 필요 없습니다. 선택 결과는
+인증서 파일만 읽으므로 비밀번호가 필요 없습니다. 기본 인증서 선택과 사업자 별칭은
 `$HOMETAX_HOME/config.toml`(기본 `~/.hometax/config.toml`, 0600)에 경로와 지문만
 남기며 비밀번호는 저장하지 않습니다.
 """
@@ -50,6 +50,18 @@ class CertificateEntry:
         if self.is_expired(now):
             return f"{self.common_name} | {until} 만료됨"
         return f"{self.common_name} | {until}까지 ({self.days_left(now)}일 남음)"
+
+
+def display_name(common_name: str) -> str:
+    """CN 끝의 인증서 일련번호와 빈 괄호를 떼고 보여 준다."""
+    import re
+
+    return re.sub(r"\d{8,}$", "", common_name).replace("()", "").strip() or common_name
+
+
+def is_personal(common_name: str) -> bool:
+    """개인 인증서 CN 은 `이름()일련번호` 꼴이다. 사업자 자료가 바로 조회되지 않는다."""
+    return "()" in common_name
 
 
 def home_dir() -> Path:
@@ -124,39 +136,123 @@ def usable(entries: list[CertificateEntry], now: datetime | None = None) -> list
     return [entry for entry in entries if not entry.is_expired(now)]
 
 
-def load_selection() -> dict[str, str] | None:
-    path = config_path()
+ALIAS_PATTERN = r"[A-Za-z][A-Za-z0-9_-]{0,31}"
+
+
+def load_config() -> dict:
+    """[certificate](기본 인증서)와 [aliases](별칭 → 지문)만 읽는다. 손상되면 빈 설정."""
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = tomllib.loads(config_path().read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
-        return None
-    saved = data.get("certificate")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _toml_string(value: str) -> str:
+    """TOML 기본 문자열. JSON 이스케이프(\\n·\\uXXXX 등)는 TOML 에서도 유효하고,
+    JSON 이 그대로 두는 DEL(0x7F)만 TOML 이 금지하므로 따로 바꾼다."""
+    import json
+
+    return json.dumps(str(value), ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def save_config(config: dict) -> Path:
+    """문자열 값만 담은 두 표를 쓴다. 다른 표는 보존하지 않는다(이 파일은 CLI 전용)."""
+    directory = home_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    lines = ["# hometax CLI 설정. 비밀번호는 저장하지 않습니다."]
+    for table in ("certificate", "aliases"):
+        values = config.get(table)
+        if not isinstance(values, dict) or not values:
+            continue
+        lines.append(f"[{table}]")
+        lines += [f"{key} = {_toml_string(value)}" for key, value in values.items()]
+    path = config_path()
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    return path
+
+
+def load_selection() -> dict[str, str] | None:
+    saved = load_config().get("certificate")
     if not isinstance(saved, dict) or not saved.get("path") or not saved.get("fingerprint"):
         return None
     return {str(key): str(value) for key, value in saved.items()}
 
 
 def save_selection(entry: CertificateEntry) -> Path:
-    directory = home_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    os.chmod(directory, 0o700)
-    path = config_path()
-    body = (
-        "# hometax CLI 설정. 비밀번호는 저장하지 않습니다.\n"
-        "[certificate]\n"
-        f'path = "{entry.cert_path}"\n'
-        f'fingerprint = "{entry.fingerprint}"\n'
-        f'common_name = "{entry.common_name}"\n'
-        f'valid_until = "{entry.valid_until.date().isoformat()}"\n'
-        f'saved_at = "{datetime.now(UTC).date().isoformat()}"\n'
-    )
-    path.write_text(body, encoding="utf-8")
-    os.chmod(path, 0o600)
-    return path
+    config = load_config()
+    config["certificate"] = {
+        "path": str(entry.cert_path),
+        "fingerprint": entry.fingerprint,
+        "common_name": entry.common_name,
+        "valid_until": entry.valid_until.date().isoformat(),
+        "saved_at": datetime.now(UTC).date().isoformat(),
+    }
+    return save_config(config)
 
 
 def clear_selection() -> None:
-    config_path().unlink(missing_ok=True)
+    config = load_config()
+    config.pop("certificate", None)
+    save_config(config)
+
+
+def load_aliases() -> dict[str, str]:
+    """별칭 → 인증서 지문."""
+    aliases = load_config().get("aliases")
+    if not isinstance(aliases, dict):
+        return {}
+    return {str(name): str(value) for name, value in aliases.items() if isinstance(value, str)}
+
+
+def save_alias(name: str, entry: CertificateEntry | None) -> Path:
+    """entry 가 None 이면 별칭을 지운다."""
+    config = load_config()
+    aliases = dict(load_aliases())
+    if entry is None:
+        aliases.pop(name, None)
+    else:
+        aliases[name] = entry.fingerprint
+    config["aliases"] = aliases
+    return save_config(config)
+
+
+def ordered(entries: list[CertificateEntry]) -> list[CertificateEntry]:
+    """`hometax list` 번호가 실행마다 바뀌지 않게 상호·지문 순으로 고정한다."""
+    return sorted(entries, key=lambda entry: (entry.common_name, entry.fingerprint))
+
+
+def resolve_company(query: str, entries: list[CertificateEntry]) -> CertificateEntry:
+    """별칭 → `hometax list` 번호 → 상호 일부(유일할 때) 순으로 찾는다."""
+    import unicodedata
+
+    listed = ordered(entries)
+    by_fingerprint = {entry.fingerprint: entry for entry in listed}
+    aliases = load_aliases()
+    if query in aliases:
+        entry = by_fingerprint.get(aliases[query])
+        if entry is None:
+            raise LookupError(f"별칭 {query} 의 인증서를 찾지 못했습니다(옮겼거나 갱신됨).")
+        return entry
+    if query.isdigit():
+        index = int(query)
+        if 1 <= index <= len(listed):
+            return listed[index - 1]
+        raise LookupError(f"목록 번호는 1~{len(listed)} 입니다: {query}")
+    wanted = unicodedata.normalize("NFC", query).casefold()
+    matches = [
+        entry
+        for entry in listed
+        if wanted in unicodedata.normalize("NFC", entry.common_name).casefold()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise LookupError(f"'{query}' 에 맞는 사업자가 없습니다. hometax list 로 확인하세요.")
+    names = ", ".join(display_name(entry.common_name) for entry in matches)
+    raise LookupError(f"'{query}' 가 여러 사업자에 맞습니다: {names}. 번호나 별칭을 쓰세요.")
 
 
 def resolve_selection(

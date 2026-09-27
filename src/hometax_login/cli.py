@@ -23,11 +23,18 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .cert_discovery import (
+    ALIAS_PATTERN,
     CertificateEntry,
     discover,
+    display_name,
     home_dir,
+    is_personal,
+    load_aliases,
     load_selection,
+    ordered,
+    resolve_company,
     resolve_selection,
+    save_alias,
     save_selection,
     usable,
 )
@@ -50,6 +57,8 @@ from .issuance_models import (
     issue_content,
 )
 from .local_session import (
+    active_sessions,
+    clear_all_sessions,
     clear_session,
     client_from_session,
     load_session,
@@ -69,6 +78,7 @@ from .revenue import (
     render,
     render_counterparties,
     render_vat,
+    table,
     vat_period,
 )
 from .write_journal import WriteJournal
@@ -108,6 +118,18 @@ def build_client() -> HometaxClient:
 
 def pick_certificate(args: argparse.Namespace) -> CertificateEntry:
     entries = discover()
+    if getattr(args, "company", None) and getattr(args, "cert", None):
+        raise CommandError("--company 와 --cert 는 함께 쓸 수 없습니다. 하나만 지정하세요.")
+    if getattr(args, "company", None):
+        try:
+            entry = resolve_company(args.company, entries)
+        except LookupError as error:
+            raise CommandError(str(error)) from None
+        if entry.is_expired():
+            raise CommandError(
+                f"{display_name(entry.common_name)} 인증서가 만료됐습니다({entry.label()})."
+            )
+        return entry
     if getattr(args, "cert", None):
         wanted = Path(args.cert).expanduser()
         for entry in entries:
@@ -165,7 +187,8 @@ def prompt_for_certificate(live: list[CertificateEntry]) -> CertificateEntry:
 
 
 def maybe_remember(entry: CertificateEntry, args: argparse.Namespace) -> None:
-    if getattr(args, "no_remember", False):
+    # --company 는 이번 실행만 고르는 것이라 기본 인증서를 바꾸지 않는다.
+    if getattr(args, "no_remember", False) or getattr(args, "company", None):
         return
     saved = load_selection()
     if (
@@ -185,10 +208,26 @@ def maybe_remember(entry: CertificateEntry, args: argparse.Namespace) -> None:
         print("저장했습니다. 바꾸려면 --choose 를 쓰세요.", file=sys.stderr)
 
 
-def read_password() -> str:
-    password = os.environ.get("HOMETAX_PW", "")
-    if password:
-        return password
+def alias_env_name(alias: str) -> str:
+    return "HOMETAX_PW_" + re.sub(r"[^A-Z0-9]", "_", alias.upper())
+
+
+def password_env_names(entry: CertificateEntry | None) -> list[str]:
+    """별칭이 붙은 인증서는 HOMETAX_PW_<별칭> 을 먼저 본다(사업자마다 비밀번호가 다를 때)."""
+    fingerprint = getattr(entry, "fingerprint", None)
+    names = [
+        alias_env_name(alias)
+        for alias, target in sorted(load_aliases().items())
+        if fingerprint and target == fingerprint
+    ]
+    return [*names, "HOMETAX_PW"]
+
+
+def read_password(entry: CertificateEntry | None = None) -> str:
+    for name in password_env_names(entry):
+        password = os.environ.get(name, "")
+        if password:
+            return password
     if not sys.stdin.isatty():
         raise CommandError("인증서 비밀번호가 필요합니다. HOMETAX_PW 를 지정하세요.")
     return getpass.getpass("인증서 비밀번호: ")
@@ -200,7 +239,7 @@ async def login_with(
     material = load_certificate(
         entry.cert_path.read_bytes(),
         entry.key_path.read_bytes(),
-        read_password(),
+        read_password(entry),
         "der",
     )
     client = build_client()
@@ -213,17 +252,29 @@ async def login_with(
     return client, identity
 
 
-async def session_client(args: argparse.Namespace) -> tuple[HometaxClient, dict]:
-    """캐시된 세션을 쓰고, 없거나 죽었으면 다시 로그인한다.
+def implicit_certificate(args: argparse.Namespace) -> CertificateEntry | None:
+    """사업자를 지정하지 않았을 때 묻지 않고 정할 수 있으면 정한다.
 
-    --cert·--choose 로 인증서를 고르면 캐시가 다른 인증서(다른 사업자)로 열린 것일 때 버린다.
-    그러지 않으면 10분 안에 사업자를 바꿔 조회해도 직전 사업자 자료가 나온다."""
-    wanted = None
-    if getattr(args, "cert", None) or getattr(args, "choose", False):
-        wanted = pick_certificate(args)
-    body = load_session()
-    if body and wanted and body.get("cert_fingerprint") != wanted.fingerprint:
-        clear_session()
+    기본 인증서가 있으면 그것, 없으면 살아 있는 세션이 딱 하나일 때 그 세션의 인증서.
+    `--company` 로만 로그인해 기본값이 없는 상태에서 후속 명령이 막히지 않게 한다."""
+    if any(getattr(args, name, None) for name in ("company", "cert", "choose")):
+        return None
+    entries = discover()
+    selected, _reason = resolve_selection(entries, load_selection())
+    if selected is not None:
+        return selected
+    live = {body.get("cert_fingerprint") for body in active_sessions()}
+    matches = [entry for entry in usable(entries) if entry.fingerprint in live]
+    return matches[0] if len(matches) == 1 else None
+
+
+async def session_client(args: argparse.Namespace) -> tuple[HometaxClient, dict]:
+    """고른 인증서(사업자)의 캐시 세션을 쓰고, 없거나 죽었으면 다시 로그인한다.
+
+    세션은 인증서 지문별 파일이라 사업자를 바꿔도 다른 사업자의 세션을 집어 오지 않는다."""
+    entry = implicit_certificate(args) or pick_certificate(args)
+    body = load_session(entry.fingerprint)
+    if body and body.get("cert_fingerprint") != entry.fingerprint:
         body = None
     if body:
         client = client_from_session(body)
@@ -232,8 +283,7 @@ async def session_client(args: argparse.Namespace) -> tuple[HometaxClient, dict]
             return client, identity
         except LoginError:
             await client.close()
-            clear_session()
-    entry = wanted or pick_certificate(args)
+            clear_session(entry.fingerprint)
     client, identity = await login_with(entry, args)
     maybe_remember(entry, args)
     return client, identity
@@ -371,23 +421,134 @@ async def cmd_login(context: Context) -> int:
     return 0
 
 
-async def cmd_status(context: Context) -> int:
-    body = load_session()
-    if not body:
-        emit(context, {"active": False}, ["세션 없음. hometax login 을 실행하세요."])
-        return 1
-    left = remaining_seconds(body)
+def company_rows() -> list[dict]:
+    """조회할 수 있는 사업자(인증서) 목록. 번호는 `--company <번호>` 와 같다."""
+    entries = ordered(discover())
+    saved = load_selection() or {}
+    aliases: dict[str, list[str]] = {}
+    for name, fingerprint in sorted(load_aliases().items()):
+        aliases.setdefault(fingerprint, []).append(name)
+    sessions = {body.get("cert_fingerprint"): body for body in active_sessions()}
+    rows = []
+    for index, entry in enumerate(entries, start=1):
+        session = sessions.get(entry.fingerprint)
+        rows.append(
+            {
+                "number": index,
+                "common_name": entry.common_name,
+                "name": display_name(entry.common_name),
+                "kind": "personal" if is_personal(entry.common_name) else "business",
+                "aliases": aliases.get(entry.fingerprint, []),
+                "valid_until": entry.valid_until.date().isoformat(),
+                "expired": entry.is_expired(),
+                "default": saved.get("fingerprint") == entry.fingerprint,
+                "session_seconds": remaining_seconds(session) if session else 0,
+                "path": str(entry.cert_path),
+            }
+        )
+    return rows
+
+
+async def cmd_list(context: Context) -> int:
+    rows = company_rows()
+    if not rows:
+        raise CommandError("인증서를 찾지 못했습니다. HOMETAX_NPKI_PATH 로 경로를 지정하세요.")
+    cells = []
+    for row in rows:
+        state = "만료" if row["expired"] else ("기본" if row["default"] else "")
+        kind = "개인" if row["kind"] == "personal" else "사업자"
+        if row["session_seconds"]:
+            state = f"{state} 세션 {row['session_seconds'] // 60}분".strip()
+        cells.append(
+            [
+                str(row["number"]),
+                row["name"],
+                kind,
+                ",".join(row["aliases"]) or "-",
+                row["valid_until"],
+                state,
+            ]
+        )
+    lines = [
+        *table(["번호", "인증서", "종류", "별칭", "만료일", "상태"], cells, left=6),
+        "",
+        "고르기: --company <번호|별칭|상호 일부>  ·  별칭 붙이기: hometax alias <이름> <번호>",
+        "개인 인증서는 로그인은 되지만 사업자 자료 조회에는 사업자용 인증서가 필요합니다.",
+    ]
+    emit(context, rows, lines)
+    return 0
+
+
+async def cmd_alias(context: Context) -> int:
+    args = context.args
+    if not re.fullmatch(ALIAS_PATTERN, args.name):
+        raise CommandError("별칭은 영문으로 시작하는 영문·숫자·_·- 32자 이하입니다.")
+    if args.remove:
+        if args.target:
+            raise CommandError(
+                "--remove 에는 사업자를 함께 쓰지 않습니다: hometax alias <이름> --remove"
+            )
+        if args.name not in load_aliases():
+            raise CommandError(f"별칭 {args.name} 이 없습니다.")
+        save_alias(args.name, None)
+        emit(context, {"removed": args.name}, [f"별칭 {args.name} 을 지웠습니다."])
+        return 0
+    if not args.target:
+        raise CommandError("붙일 사업자를 지정하세요: hometax alias <이름> <번호|상호 일부>")
+    try:
+        entry = resolve_company(args.target, discover())
+    except LookupError as error:
+        raise CommandError(str(error)) from None
+    env = alias_env_name(args.name)
+    clashes = [
+        name
+        for name, fingerprint in load_aliases().items()
+        if name != args.name and alias_env_name(name) == env and fingerprint != entry.fingerprint
+    ]
+    if clashes:
+        raise CommandError(
+            f"별칭 {clashes[0]} 과 비밀번호 환경변수({env})가 겹칩니다. 다른 이름을 쓰세요."
+        )
+    save_alias(args.name, entry)
     emit(
         context,
-        {"active": True, "identity": body.get("identity"), "expires_in": left},
-        [f"세션 유효: {body.get('identity', {}).get('user_name', '?')} (남은 {left}초)"],
+        {"alias": args.name, "common_name": entry.common_name},
+        [
+            f"{args.name} → {display_name(entry.common_name)}",
+            f"이 사업자의 인증서 비밀번호가 다르면 {env} 로 줄 수 있습니다.",
+        ],
+    )
+    return 0
+
+
+async def cmd_status(context: Context) -> int:
+    sessions = [row for row in company_rows() if row["session_seconds"]]
+    if not sessions:
+        emit(context, {"active": []}, ["세션 없음. hometax login 을 실행하세요."])
+        return 1
+    emit(
+        context,
+        {"active": sessions},
+        [f"{row['name']}: 남은 {row['session_seconds']}초" for row in sessions],
     )
     return 0
 
 
 async def cmd_logout(context: Context) -> int:
-    clear_session()
-    emit(context, {"cleared": True}, ["로컬 세션을 지웠습니다(홈택스 원격 로그아웃 아님)."])
+    if getattr(context.args, "company", None):
+        entry = pick_certificate(context.args)
+        clear_session(entry.fingerprint)
+        message = (
+            f"{display_name(entry.common_name)} 로컬 세션을 지웠습니다(홈택스 원격 로그아웃 아님)."
+        )
+        emit(context, {"cleared": 1}, [message])
+        return 0
+    removed = clear_all_sessions()
+    emit(
+        context,
+        {"cleared": removed},
+        [f"로컬 세션 {removed}개를 지웠습니다(홈택스 원격 로그아웃 아님)."],
+    )
     return 0
 
 
@@ -1096,7 +1257,7 @@ async def invoice_operation(context: Context, action: str) -> int:
     entry = pick_certificate(args) if args.yes else None
     material = (
         load_certificate(
-            entry.cert_path.read_bytes(), entry.key_path.read_bytes(), read_password(), "der"
+            entry.cert_path.read_bytes(), entry.key_path.read_bytes(), read_password(entry), "der"
         )
         if entry
         else None
@@ -1146,6 +1307,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_cert_options(target):
+        target.add_argument("--company", help="조회할 사업자: hometax list 의 번호·별칭·상호 일부")
         target.add_argument("--cert", help="사용할 인증서 경로(폴더 또는 signCert.der)")
         target.add_argument(
             "--choose", action="store_true", help="저장된 선택을 무시하고 다시 고름"
@@ -1161,10 +1323,20 @@ def build_parser() -> argparse.ArgumentParser:
     add_cert_options(login)
     login.set_defaults(handler=cmd_login)
 
-    status = sub.add_parser("status", help="세션 상태")
+    listing = sub.add_parser("list", help="조회할 수 있는 사업자 목록")
+    listing.set_defaults(handler=cmd_list)
+
+    alias = sub.add_parser("alias", help="사업자에 별칭 붙이기/지우기")
+    alias.add_argument("name", help="별칭(영문)")
+    alias.add_argument("target", nargs="?", help="hometax list 번호 또는 상호 일부")
+    alias.add_argument("--remove", action="store_true", help="별칭 지우기")
+    alias.set_defaults(handler=cmd_alias)
+
+    status = sub.add_parser("status", help="사업자별 세션 상태")
     status.set_defaults(handler=cmd_status)
 
-    logout = sub.add_parser("logout", help="로컬 세션 삭제")
+    logout = sub.add_parser("logout", help="로컬 세션 삭제(기본 전체)")
+    logout.add_argument("--company", help="이 사업자 세션만 지움")
     logout.set_defaults(handler=cmd_logout)
 
     def add_period_options(target):
