@@ -188,7 +188,10 @@ def prompt_for_certificate(live: list[CertificateEntry]) -> CertificateEntry:
 
 def maybe_remember(entry: CertificateEntry, args: argparse.Namespace) -> None:
     # --company 는 이번 실행만 고르는 것이라 기본 인증서를 바꾸지 않는다.
-    if getattr(args, "no_remember", False) or getattr(args, "company", None):
+    # 단 --remember 를 함께 주면 기본으로 삼는다(hometax login --company 2 --remember).
+    if getattr(args, "no_remember", False):
+        return
+    if getattr(args, "company", None) and not getattr(args, "remember", False):
         return
     saved = load_selection()
     if (

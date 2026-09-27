@@ -93,8 +93,8 @@ hometax summary --ytd --company 컨설팅 # 상호 일부(한 곳에만 맞을 �
 hometax alias shc --remove
 ```
 
-- `--company`는 `--cert`와 함께 쓸 수 없고, 이번 실행만 바꿉니다. 인자 없이 쓰는 기본 사업자는 `hometax login --choose`로
-  바꿉니다. 목록 번호는 상호순이라 인증서를 더하거나 빼면 바뀝니다. 오래 쓸 사업자는 별칭을 붙이세요.
+- `--company`는 `--cert`와 함께 쓸 수 없고, 이번 실행만 바꿉니다. 인자 없이 쓰는 기본 사업자는
+  `hometax login --company <번호|별칭> --remember`로 바꿉니다(`hometax list`의 "기본"). 목록 번호는 상호순이라 인증서를 더하거나 빼면 바뀝니다. 오래 쓸 사업자는 별칭을 붙이세요.
 - 조회 세션은 인증서마다 따로 10분 보관합니다(`~/.hometax/sessions/`). 사업자를 오가도 서로의
   세션을 덮지 않고, 다른 사업자 자료가 섞이지 않습니다. `hometax status`가 사업자별 남은 시간을,
   `hometax logout`이 전부를(`--company`면 그 사업자만) 지웁니다.

@@ -671,3 +671,15 @@ def test_company_and_cert_together_are_rejected(npki, capsys):
     folder = write_certificate(npki / "a", common_name="가사업자")
     assert cli.main(["summary", "--ytd", "--company", "1", "--cert", str(folder)]) == 2
     assert "함께 쓸 수 없습니다" in capsys.readouterr().err
+
+
+def test_company_with_remember_sets_the_default(npki):
+    write_certificate(npki / "a", common_name="가사업자")
+    write_certificate(npki / "b", common_name="나사업자")
+    target = next(entry for entry in discover() if entry.common_name == "나사업자")
+
+    cli.maybe_remember(target, parse(["login", "--company", "2"]))
+    assert load_selection() is None
+
+    cli.maybe_remember(target, parse(["login", "--company", "2", "--remember"]))
+    assert load_selection()["fingerprint"] == target.fingerprint

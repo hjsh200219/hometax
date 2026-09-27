@@ -231,7 +231,7 @@ wheels = [
 
 [[package]]
 name = "hometax"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "." }
 dependencies = [
     { name = "asn1crypto" },
