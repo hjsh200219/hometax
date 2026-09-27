@@ -79,7 +79,8 @@ async def test_saved_session_never_contains_password_or_certificate():
 
     body = json.loads(session_path().read_text(encoding="utf-8"))
 
-    assert set(body) == {"cookies", "identity", "expires_at", "saved_at"}
+    assert set(body) == {"cookies", "identity", "expires_at", "saved_at", "cert_fingerprint"}
+    assert body["cert_fingerprint"] is None
     assert body["expires_at"] > time.time()
 
 

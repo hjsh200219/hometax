@@ -34,7 +34,7 @@ def setup_cli(monkeypatch, tmp_path, *, yes=True):
     monkeypatch.setattr(cli, "read_password", lambda: "synthetic-password")
     monkeypatch.setattr(cli, "load_certificate", lambda *args: material)
     monkeypatch.setattr(cli, "build_client", lambda: client)
-    monkeypatch.setattr(cli, "save_session", lambda *args: None)
+    monkeypatch.setattr(cli, "save_session", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "open_journal", lambda: WriteJournal(tmp_path / "private" / "j.db"))
     monkeypatch.setattr(cli, "show_preview", lambda *args: None)
     monkeypatch.setattr(

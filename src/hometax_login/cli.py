@@ -209,13 +209,22 @@ async def login_with(
     except Exception:
         await client.close()
         raise
-    save_session(client, identity)
+    save_session(client, identity, cert_fingerprint=entry.fingerprint)
     return client, identity
 
 
 async def session_client(args: argparse.Namespace) -> tuple[HometaxClient, dict]:
-    """캐시된 세션을 쓰고, 없거나 죽었으면 다시 로그인한다."""
+    """캐시된 세션을 쓰고, 없거나 죽었으면 다시 로그인한다.
+
+    --cert·--choose 로 인증서를 고르면 캐시가 다른 인증서(다른 사업자)로 열린 것일 때 버린다.
+    그러지 않으면 10분 안에 사업자를 바꿔 조회해도 직전 사업자 자료가 나온다."""
+    wanted = None
+    if getattr(args, "cert", None) or getattr(args, "choose", False):
+        wanted = pick_certificate(args)
     body = load_session()
+    if body and wanted and body.get("cert_fingerprint") != wanted.fingerprint:
+        clear_session()
+        body = None
     if body:
         client = client_from_session(body)
         try:
@@ -224,7 +233,7 @@ async def session_client(args: argparse.Namespace) -> tuple[HometaxClient, dict]
         except LoginError:
             await client.close()
             clear_session()
-    entry = pick_certificate(args)
+    entry = wanted or pick_certificate(args)
     client, identity = await login_with(entry, args)
     maybe_remember(entry, args)
     return client, identity
@@ -1098,7 +1107,7 @@ async def invoice_operation(context: Context, action: str) -> int:
     try:
         if args.yes:
             identity = await client.login(material, getattr(args, "login_type", "04") or "04")
-            save_session(client, identity)
+            save_session(client, identity, cert_fingerprint=getattr(entry, "fingerprint", None))
         operations = client.invoice_operations
         if action == "issue":
             preview = await operations.preview_issue(InvoiceIssueRequest(**payload))

@@ -34,12 +34,21 @@ def default_ttl() -> int:
     return ttl if ttl > 0 else DEFAULT_TTL_SECONDS
 
 
-def save_session(client: HometaxClient, identity: dict, ttl_seconds: int | None = None) -> Path:
+def save_session(
+    client: HometaxClient,
+    identity: dict,
+    ttl_seconds: int | None = None,
+    *,
+    cert_fingerprint: str | None = None,
+) -> Path:
+    """cert_fingerprint 는 어느 인증서로 연 세션인지 표시할 뿐 인증 근거가 아니다.
+    --cert 로 다른 인증서를 고르면 세션을 버리는 데만 쓴다."""
     ttl = default_ttl() if ttl_seconds is None else ttl_seconds
     now = time.time()
     body = {
         "cookies": {name: value for name, value in client.http.cookies.items()},
         "identity": {str(k): v for k, v in (identity or {}).items()},
+        "cert_fingerprint": cert_fingerprint,
         "saved_at": now,
         "expires_at": now + ttl,
     }

@@ -442,3 +442,43 @@ def test_cash_purchase_cli_does_not_repeat_period_totals_for_every_page(npki, mo
     assert calls == [1, 2, "closed"]
     assert payload["eligible_total"]["count"] == 2
     assert payload["eligible_total"]["total_amount"] == 1100
+
+
+def test_session_client_drops_a_cached_session_of_another_certificate(npki, monkeypatch):
+    """사업자 A 세션이 살아 있어도 --cert 로 B 를 고르면 B 로 새로 로그인해야 한다."""
+    first = write_certificate(npki / "a", common_name="가사업자")
+    second = write_certificate(npki / "b", common_name="나사업자")
+    entries = {entry.cert_path.parent.name: entry for entry in discover()}
+    events = []
+
+    class FakeClient:
+        async def verify(self):
+            events.append("reused")
+            return {"user_name": "가사업자"}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(
+        cli,
+        "load_session",
+        lambda: {"cookies": {}, "cert_fingerprint": entries["a"].fingerprint},
+    )
+    monkeypatch.setattr(cli, "client_from_session", lambda body: FakeClient())
+    monkeypatch.setattr(cli, "clear_session", lambda: events.append("cleared"))
+
+    async def fake_login(entry, args):
+        events.append(("login", entry.cert_path.parent.name))
+        return FakeClient(), {"user_name": entry.common_name}
+
+    monkeypatch.setattr(cli, "login_with", fake_login)
+    monkeypatch.setattr(cli, "maybe_remember", lambda entry, args: None)
+
+    import asyncio
+
+    asyncio.run(cli.session_client(parse(["summary", "--ytd", "--cert", str(second)])))
+    assert events == ["cleared", ("login", "b")]
+
+    events.clear()
+    asyncio.run(cli.session_client(parse(["summary", "--ytd", "--cert", str(first)])))
+    assert events == ["reused"]
