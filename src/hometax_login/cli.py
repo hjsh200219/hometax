@@ -165,6 +165,13 @@ def same_path(left: Path, right: Path) -> bool:
     return normalize("NFC", str(left.resolve())) == normalize("NFC", str(right.resolve()))
 
 
+def not_found_message() -> str:
+    scanned = ", ".join(str(p) for p in _scanned_paths())
+    return (
+        f"인증서를 찾지 못했습니다.\n찾아본 곳: {scanned}\nHOMETAX_NPKI_PATH 로 경로를 지정하세요."
+    )
+
+
 def _scanned_paths() -> list[Path]:
     from .cert_discovery import default_search_paths
 
@@ -390,7 +397,7 @@ async def cmd_certs(context: Context) -> int:
     entries = discover()
     saved = load_selection()
     if not entries:
-        raise CommandError("인증서를 찾지 못했습니다. HOMETAX_NPKI_PATH 로 경로를 지정하세요.")
+        raise CommandError(not_found_message())
     payload, lines = [], []
     for entry in entries:
         chosen = saved and saved.get("fingerprint") == entry.fingerprint
@@ -455,7 +462,7 @@ def company_rows() -> list[dict]:
 async def cmd_list(context: Context) -> int:
     rows = company_rows()
     if not rows:
-        raise CommandError("인증서를 찾지 못했습니다. HOMETAX_NPKI_PATH 로 경로를 지정하세요.")
+        raise CommandError(not_found_message())
     cells = []
     for row in rows:
         state = "만료" if row["expired"] else ("기본" if row["default"] else "")
@@ -1510,7 +1517,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def protect_windows_output() -> None:
+    """Windows 에서 파이프·파일로 내보내면 표준 출력이 ANSI 코드 페이지(한국어판 cp949)다.
+    홈택스 자료(거래처명 등)에 그 밖 문자가 오면 print 가 UnicodeEncodeError 로 죽으므로
+    `?` 로 바꾼다. 인코딩은 바꾸지 않는다(콘솔·PowerShell 이 한글을 그대로 읽게).
+    UTF-8 이 필요하면 PYTHONUTF8=1."""
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    protect_windows_output()
     args = build_parser().parse_args(argv)
     context = Context(args=args)
     try:

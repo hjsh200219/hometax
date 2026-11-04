@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -105,8 +106,9 @@ def test_save_and_load_selection_round_trip_with_owner_only_permissions(tmp_path
     assert saved["path"] == str(entry.cert_path)
     assert saved["fingerprint"] == entry.fingerprint
     config = tmp_path / "home" / "config.toml"
-    assert config.stat().st_mode & 0o777 == 0o600
-    assert config.parent.stat().st_mode & 0o777 == 0o700
+    if os.name != "nt":  # Windows st_mode 에는 POSIX 권한 비트가 없다
+        assert config.stat().st_mode & 0o777 == 0o600
+        assert config.parent.stat().st_mode & 0o777 == 0o700
 
 
 @pytest.mark.parametrize(
@@ -164,3 +166,30 @@ def test_entry_label_shows_name_and_expiry(tmp_path):
     assert "예시컨설팅" in label
     assert entry.valid_until.strftime("%Y-%m-%d") in label
     assert isinstance(entry, CertificateEntry)
+
+
+def test_windows_search_paths_cover_profile_locallow_and_usb_drives(tmp_path, monkeypatch):
+    from hometax_login import cert_discovery
+
+    profile = tmp_path / "profile"
+    usb = tmp_path / "usb"
+    (usb / "NPKI").mkdir(parents=True)
+    empty = tmp_path / "empty-drive"
+    empty.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(
+        cert_discovery.os,
+        "listdrives",
+        lambda: ["A:\\", str(usb), str(empty)],
+        raising=False,
+    )
+
+    paths = cert_discovery._windows_search_paths()
+
+    assert paths == [
+        profile / "AppData" / "LocalLow" / "NPKI",
+        tmp_path / "local" / "NPKI",
+        usb / "NPKI",
+    ]

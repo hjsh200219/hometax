@@ -1,10 +1,21 @@
 ---
 created: 2026-09-27T09:30:00+09:00
 project: hometax
-summary: 0.9.0 여러 사업자(list·--company·alias·인증서별 세션), 386개 테스트. 세무대리인·은행 fast 는 보류/결정 대기
+summary: 0.9.2 Windows 지원(tzdata·저널 권한 검사·탐색 경로·출력 인코딩), Mac 389·Windows 387+2skip. 세무대리인·은행 fast 는 보류/결정 대기
 ---
 
 ## Session Digest
+
+0.9.2(2026-11-04): Windows 지원. QA VM `vm-develop`(Windows 10 x64 한국어판, Python 3.12)에서 실측한 결함 4가지를 고쳤다.
+1) `ZoneInfo("Asia/Seoul")` 이 tzdata 없이 import 시점에 죽음 → `tzdata; sys_platform == 'win32'` 의존성.
+2) 쓰기 저널이 부모 폴더 `st_mode & 0o077` 검사로 Windows(늘 0o40777)에서 항상 WRITE_JOURNAL_UNAVAILABLE
+   → `write_journal.POSIX_MODES` 로 Windows 는 권한 비트 검사·chmod 생략(NTFS 프로필 ACL 에 맡김, tech-debt 기록).
+3) 파이프·파일 출력이 cp949 라 그 밖 문자에서 UnicodeEncodeError → Windows 에서 stdout/stderr `errors="replace"`.
+4) 테스트 conftest 가 Windows asyncio 의 루프백 socketpair 까지 막음 → 루프백만 허용.
+탐색 경로는 `%USERPROFILE%\AppData\LocalLow\NPKI`·이동식 디스크 `X:\NPKI` 추가, 인증서 없음 오류에 찾아본 곳 표시.
+VM 확인: pip·`uv sync --locked` 양쪽 387 passed·2 skipped(POSIX 권한 비트), ruff·format 통과, 합성 인증서를
+LocalLow 에 두고 `hometax certs` 탐색 성공(확인 뒤 삭제). Windows 실계정 로그인은 미검증(VM 에 실인증서 없음).
+VM 으로 복사할 때 macOS tar 는 `COPYFILE_DISABLE=1` 을 줘야 `._*` 파일이 안 생긴다(ruff E902 원인이었음).
 
 0.9.0: `hometax list`(번호·인증서·종류 개인/사업자·별칭·만료·세션), 모든 조회에 `--company <번호|별칭|상호 일부>`,
 `hometax alias <이름> <번호>`, 비밀번호 `HOMETAX_PW_<별칭>` → `HOMETAX_PW`, 세션 `~/.hometax/sessions/<지문16>.json`.

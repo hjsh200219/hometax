@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from hometax_login import write_journal
 from hometax_login.errors import LoginError
 from hometax_login.write_journal import WriteJournal
 
@@ -64,8 +65,9 @@ def test_initializes_private_file_and_survives_restart(tmp_path):
 
     journal = WriteJournal(path)
     assert path.exists()
-    assert path.parent.stat().st_mode & 0o777 == 0o700
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":  # Windows st_mode 에는 POSIX 권한 비트가 없다
+        assert path.parent.stat().st_mode & 0o777 == 0o700
+        assert path.stat().st_mode & 0o777 == 0o600
 
     assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A) == "started"
     assert status_of(path, PLAN_A) == "in_flight"
@@ -288,6 +290,7 @@ def test_existing_nonempty_database_without_attempt_table_fails_closed(tmp_path)
     assert caught.value.code == "WRITE_JOURNAL_UNAVAILABLE"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows st_mode 에는 POSIX 권한 비트가 없다")
 def test_file_permissions_are_repaired_on_existing_database(tmp_path):
     path = db_path(tmp_path)
     WriteJournal(path)
@@ -298,6 +301,7 @@ def test_file_permissions_are_repaired_on_existing_database(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows st_mode 에는 POSIX 권한 비트가 없다")
 def test_existing_parent_permissions_are_not_changed_and_are_rejected(tmp_path):
     parent = tmp_path / "shared"
     parent.mkdir()
@@ -356,3 +360,18 @@ def test_connection_setup_failure_closes_open_connection(tmp_path, monkeypatch):
 
     assert caught.value.code == "WRITE_JOURNAL_UNAVAILABLE"
     assert closed == [True]
+
+
+def test_windows_mode_skips_posix_permission_check_and_leaves_modes(tmp_path, monkeypatch):
+    """Windows 분기(POSIX_MODES=False): 공유 권한 부모도 거부하지 않고 권한을 바꾸지 않는다.
+    Windows st_mode 는 늘 0o40777 이라 이 검사가 있으면 저널을 열 수 없다."""
+    monkeypatch.setattr(write_journal, "POSIX_MODES", False)
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    os.chmod(parent, 0o755)
+
+    journal = WriteJournal(parent / "write-attempts.sqlite3")
+
+    assert journal.begin(PLAN_A, TARGET_A, PAYLOAD_A) == "started"
+    if os.name != "nt":
+        assert parent.stat().st_mode & 0o777 == 0o755

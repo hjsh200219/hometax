@@ -18,8 +18,12 @@ export HOMETAX_PW='<인증서 비밀번호>'                        # 생략하�
 hometax certs                                               # 인증서가 보이는지 먼저 확인
 ```
 
+Windows(PowerShell)는 uv 설치(`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`)
+뒤 같은 `uv tool install`을 쓰고, 비밀번호는 `$env:HOMETAX_PW = '<인증서 비밀번호>'`로 지정한다.
+Git Bash 에서는 위 `export` 그대로 된다. `--json` 결과를 UTF-8 로 받으려면 `PYTHONUTF8=1`을 함께 준다.
+
 인증서는 `HOMETAX_NPKI_PATH`(지정 시 그것만), 없으면 `./NPKI`·`~/NPKI`·macOS 표준 경로·
-`/Volumes/*/NPKI`에서 찾는다. 만료된 인증서는 후보에서 빠지고, 여러 개면 사람에게 묻는다.
+`/Volumes/*/NPKI`, Windows `%USERPROFILE%\AppData\LocalLow\NPKI`·이동식 디스크 `X:\NPKI`에서 찾는다. 만료된 인증서는 후보에서 빠지고, 여러 개면 사람에게 묻는다.
 한 번 고르면 `~/.hometax/config.toml`에 경로와 지문으로 기억하고, 같은 경로의 인증서가
 갱신되면 다시 묻는다.
 
@@ -98,4 +102,4 @@ from hometax_login.protocol import HometaxClient
 - **본인 자료만 다룬다.** 타인 자료를 대신 조회하는 용도로 쓰려면 국세청 사전협의가 필요하다
   (개인정보처리방침 제5조 ⑩ — 대리인의 자동화 도구를 통한 본인정보 전송은 협의 대상).
 - 국세청이 자동화 접근을 기술적으로 차단하면 조회가 실패한다. 우회하지 말고 사용자에게 알린다.
-- 세션 쿠키는 `~/.hometax/session.json`(0600)에 10분간 보관한다. `hometax logout`으로 지운다.
+- 세션 쿠키는 `~/.hometax/sessions/<지문 16자>.json`(0600, Windows 는 사용자 프로필 권한)에 10분간 보관한다. `hometax logout`으로 지운다.

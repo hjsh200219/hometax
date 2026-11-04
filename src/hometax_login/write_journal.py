@@ -15,6 +15,10 @@ FinishStatus = Literal["unknown", "complete", "rejected"]
 _SCHEMA_VERSION = 2
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _PLAN_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{16,100}$")
+# Windows 의 st_mode 는 권한을 담지 않는다(디렉터리는 늘 0o40777, 파일은 0o100666/0o100444).
+# 거기서는 사용자 프로필 아래 NTFS ACL 에 접근 제한을 맡기고
+# POSIX 권한 비트 검사·복구를 하지 않는다.
+POSIX_MODES = os.name != "nt"
 
 
 class WriteJournal:
@@ -192,13 +196,14 @@ class WriteJournal:
             if parent_existed:
                 if parent.is_symlink() or not parent.is_dir():
                     raise self._unavailable()
-                if parent.stat(follow_symlinks=False).st_mode & 0o077:
+                if POSIX_MODES and parent.stat(follow_symlinks=False).st_mode & 0o077:
                     raise self._unavailable()
             else:
                 parent.mkdir(parents=True, mode=0o700, exist_ok=True)
                 if parent.is_symlink() or not parent.is_dir():
                     raise self._unavailable()
-                os.chmod(parent, 0o700)
+                if POSIX_MODES:
+                    os.chmod(parent, 0o700)
 
             if self.path.exists():
                 if self.path.is_symlink():
@@ -206,7 +211,8 @@ class WriteJournal:
                 info = self.path.stat(follow_symlinks=False)
                 if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
                     raise self._unavailable()
-                os.chmod(self.path, 0o600)
+                if POSIX_MODES:
+                    os.chmod(self.path, 0o600)
                 return False
 
             flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY

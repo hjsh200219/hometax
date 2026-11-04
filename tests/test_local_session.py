@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
@@ -42,8 +43,9 @@ async def test_save_and_load_round_trip_keeps_identity_and_cookies(local_home):
     assert saved is not None
     assert saved["identity"]["user_name"] == "예시컨설팅"
     assert saved["cookies"]["TXPPsessionID"] == "cookie-value"
-    assert session_path().stat().st_mode & 0o777 == 0o600
-    assert local_home.stat().st_mode & 0o777 == 0o700
+    if os.name != "nt":  # Windows st_mode 에는 POSIX 권한 비트가 없다
+        assert session_path().stat().st_mode & 0o777 == 0o600
+        assert local_home.stat().st_mode & 0o777 == 0o700
 
 
 @pytest.mark.asyncio

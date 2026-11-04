@@ -83,14 +83,46 @@ def default_search_paths() -> list[Path]:
         paths.append(Path("~/Library/Preferences/NPKI").expanduser())
         paths.extend(sorted(Path("/Volumes").glob("*/NPKI")))
     elif os.name == "nt":
-        for variable in ("APPDATA", "LOCALAPPDATA", "USERPROFILE"):
-            base = os.environ.get(variable)
-            if base:
-                paths.append(Path(base) / "NPKI")
-                paths.append(Path(base) / "AppData" / "LocalLow" / "NPKI")
+        paths.extend(_windows_search_paths())
     else:
         paths.append(Path("~/.npki").expanduser())
     return paths
+
+
+def _windows_search_paths() -> list[Path]:
+    paths = []
+    profile = os.environ.get("USERPROFILE")
+    if profile:
+        # 공동인증서(NPKI) Windows 표준 위치
+        paths.append(Path(profile) / "AppData" / "LocalLow" / "NPKI")
+    for variable in ("APPDATA", "LOCALAPPDATA"):
+        base = os.environ.get(variable)
+        if base:
+            paths.append(Path(base) / "NPKI")
+    return [*paths, *_drive_roots_with_npki()]
+
+
+def _drive_roots_with_npki() -> list[Path]:
+    """Windows 이동식 디스크(USB) 루트의 `X:\\NPKI` — macOS 의 `/Volumes/*/NPKI` 에 해당한다.
+    A:·B:(플로피)는 건드리지 않고, 응답하지 않는 드라이브는 건너뛴다."""
+    listdrives = getattr(os, "listdrives", None)
+    if listdrives is None:
+        return []
+    try:
+        drives = listdrives()
+    except OSError:
+        return []
+    found = []
+    for drive in drives:
+        if drive[:1].upper() in ("A", "B"):
+            continue
+        candidate = Path(drive) / "NPKI"
+        try:
+            if candidate.is_dir():
+                found.append(candidate)
+        except OSError:
+            continue
+    return found
 
 
 def _read_entry(directory: Path) -> CertificateEntry | None:

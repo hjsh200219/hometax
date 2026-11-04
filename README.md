@@ -26,7 +26,7 @@ Python 라이브러리, 로컬 HTTP API 세 가지 경로를 제공하며 셋 �
 | 거래처 등록·수정·삭제 | 미리보기만 실계정 확인. 실제 반영은 미검증 |
 | 발행·정정·취소 | 모의 HTTP와 실제 XML 서명까지만. **실제 전송 호환성 미검증** |
 | 여러 사업자(`list`·`--company`·별칭·인증서별 세션) | 사업자 인증서 1건·개인 인증서 1건으로 확인(2026-09-27). 사업자 인증서 2건 동시는 미검증 |
-| 플랫폼 | macOS Apple Silicon에서 검증. 그 외는 미검증 |
+| 플랫폼 | macOS Apple Silicon 실계정 확인. Windows 10/11 x64(한국어판, Python 3.12)는 테스트 전체·CLI·표준 위치 인증서 탐색까지 확인(2026-11-04), 실계정 로그인은 미검증. Linux 미검증 |
 | 인증서 | 위 1건으로만 확인. 다른 인증서 호환성은 보장하지 않음 |
 
 ## 설치
@@ -43,6 +43,16 @@ uv tool install git+https://github.com/hjsh200219/hometax
 
 # 저장소에서 직접
 uv sync --locked && uv run hometax certs
+```
+
+Windows(PowerShell)는 uv 를 먼저 설치한 뒤 같은 명령을 씁니다. 시간대 자료(`tzdata`)는 Windows 에서만
+자동으로 함께 설치됩니다.
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+uv tool install git+https://github.com/hjsh200219/hometax
+$env:HOMETAX_PW = '<인증서 비밀번호>'        # 생략하면 실행할 때 입력받습니다
+hometax certs
 ```
 
 ## 빠른 시작
@@ -72,8 +82,10 @@ hometax status / hometax logout
 
 ### 인증서 선택
 
-- 찾는 곳: `HOMETAX_NPKI_PATH`(지정하면 그곳만), 없으면 `./NPKI`·`~/NPKI`·macOS 표준 경로·
-  `/Volumes/*/NPKI`.
+- 찾는 곳: `HOMETAX_NPKI_PATH`(지정하면 그곳만, 여러 곳은 macOS `:`·Windows `;`로 구분), 없으면
+  `./NPKI`·`~/NPKI`와 OS 표준 위치 — macOS `~/Library/Preferences/NPKI`·`/Volumes/*/NPKI`,
+  Windows `%USERPROFILE%\AppData\LocalLow\NPKI`·`%APPDATA%\NPKI`·`%LOCALAPPDATA%\NPKI`·
+  이동식 디스크 `X:\NPKI`(A:·B: 제외), Linux `~/.npki`. 못 찾으면 찾아본 곳을 함께 알려 줍니다.
 - 만료된 인증서는 후보에서 빼고, 여러 개면 묻습니다. 대화형이 아니면 임의로 고르지 않고
   `--cert`를 요구합니다.
 - 고른 인증서는 `~/.hometax/config.toml`(0600)에 **경로와 지문**으로 기억합니다. 같은 경로의
@@ -261,9 +273,15 @@ PBKDF1-SHA1/SEED-CBC와 PBES2/PBKDF2/SEED-CBC를 지원합니다. 지원하지 �
 | 파일 | 내용 | 권한 |
 |---|---|---|
 | `~/.hometax/config.toml` | 고른 인증서의 경로와 지문 | 0600 |
-| `~/.hometax/session.json` | 홈택스 세션 쿠키(기본 10분) | 0600 |
+| `~/.hometax/sessions/<지문 16자>.json` | 인증서별 홈택스 세션 쿠키(기본 10분) | 0600 |
 | `~/.hometax/writes.sqlite3` | 쓰기 저널(작업 id·해시·상태·시각) | 0600 |
 | `.env` | 로컬 API 키, 선택적으로 `HOMETAX_PW` | 0600, gitignore |
+
+Windows 에는 POSIX 권한 비트가 없어 위 권한을 걸지 않고, 사용자 프로필(`%USERPROFILE%\.hometax`)의
+NTFS 접근 권한에 맡깁니다. 쓰기 저널의 「부모 폴더가 남에게 열려 있으면 거부」 검사도 Windows 에서는
+하지 않습니다(심볼릭 링크·일반 파일 검사는 그대로). 공용 PC 에서는 `HOMETAX_HOME`을 본인만 쓰는 폴더로
+두세요. Windows 에서 결과를 파이프·파일로 넘기면 한국어판 기본 인코딩(cp949)으로 나오고, 거기 없는
+문자는 `?`로 바뀝니다. UTF-8 이 필요하면 `$env:PYTHONUTF8 = '1'`을 지정합니다.
 
 인증서 개인키와 비밀번호는 어디에도 저장하지 않습니다. 저널에는 거래처 원문·쿠키·비밀번호를
 남기지 않습니다. HTTP API 경로는 쿠키를 프로세스 메모리에만 둡니다.
