@@ -1,1 +1,1 @@
-"""Certificate-based HomeTax login, isolated from the PillDoc application."""
+"""Certificate-based HomeTax login and tax data access."""
