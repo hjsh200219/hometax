@@ -104,3 +104,28 @@ async def test_invalid_password_response_never_retries():
     assert attempts.count("/pubcLogin.do") == 1
     assert "/permission.do" not in attempts
     await client.close()
+
+
+async def test_rejection_message_carries_hometax_guidance_once():
+    attempts = []
+
+    def handler(request):
+        attempts.append(request.url.path)
+        if request.url.path == "/":
+            return httpx.Response(200)
+        if request.url.path == "/wqAction.do":
+            return httpx.Response(200, json={"pkcEncSsn": "challenge"})
+        return httpx.Response(
+            200,
+            text="nts_loginSystemCallback('TXPP', {'code':'F','errMsg':"
+            "decodeURIComponent('%5BETINFZ0109%5D%EB%93%B1%EB%A1%9D')});",
+        )
+
+    client = HometaxClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(LoginError) as caught:
+        await client.login(signing_material(), "04")
+    assert caught.value.code == "LOGIN_REJECTED"
+    assert "ETINFZ0109" in caught.value.message
+    assert "등록되지 않은 인증서" in caught.value.message
+    assert attempts.count("/pubcLogin.do") == 1
+    await client.close()

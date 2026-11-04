@@ -3,6 +3,7 @@
 import base64
 import json
 import re
+import urllib.parse
 from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -35,6 +36,38 @@ def parse_login_result(text: str) -> bool:
     for key in ("code", "lgnRsltCd"):
         markers[key] = re.findall(rf"['\"]{key}['\"]\s*:\s*['\"]([^'\"]*)['\"]", text)
     return markers == {"code": ["S"], "lgnRsltCd": ["01"]}
+
+
+# 로그인 거부 응답의 홈택스 오류 코드 → 우리 안내문.
+# 오류에 홈택스 원문을 넣지 않는 원칙(README 「실패 처리」) 때문에 원문 errMsg 대신 코드만 꺼내고,
+# 아는 코드는 여기 문구로, 모르는 코드는 코드만 알린다.
+LOGIN_ERROR_GUIDE = {
+    "ETINFZ0109": "홈택스에 등록되지 않은 인증서입니다"
+    "(갱신·재발급한 인증서는 다시 등록해야 합니다). "
+    "홈택스 웹에서 인증서 등록 후 다시 로그인하세요.",
+}
+
+
+def parse_login_error_code(text: str) -> str | None:
+    """거부 응답 `errMsg` 맨 앞의 `[ETINFZ0109]` 같은 오류 코드만 꺼낸다.
+    JavaScript 는 실행하지 않는다. errMsg 가 없거나 여럿이거나 코드 모양이 아니면 None."""
+    if len(text) > 65536:
+        return None
+    found = re.findall(
+        r"['\"]errMsg['\"]\s*:\s*(?:decodeURIComponent\(\s*)?['\"]([^'\"]{0,2000})", text
+    )
+    if len(found) != 1:
+        return None
+    match = re.match(r"\s*\[([A-Z]{2,10}[0-9]{2,8})\]", urllib.parse.unquote_plus(found[0]))
+    return match.group(1) if match else None
+
+
+def login_rejection_message(text: str) -> str:
+    code = parse_login_error_code(text)
+    if code is None:
+        return "홈택스 로그인이 확인되지 않았습니다. 인증서 등록 상태 또는 추가 인증을 확인하세요."
+    guide = LOGIN_ERROR_GUIDE.get(code, "인증서 등록 상태 또는 추가 인증을 확인하세요.")
+    return f"홈택스 로그인이 거부됐습니다(홈택스 오류 {code}). {guide}"
 
 
 class HometaxClient:
@@ -160,8 +193,7 @@ class HometaxClient:
             # Do not replay authentication attempts or try to bypass protective responses.
             raise LoginError(
                 "LOGIN_REJECTED",
-                "홈택스 로그인이 확인되지 않았습니다. "
-                "인증서 등록 상태 또는 추가 인증을 확인하세요.",
+                login_rejection_message(result),
                 401,
             )
         identity = await self.verify()

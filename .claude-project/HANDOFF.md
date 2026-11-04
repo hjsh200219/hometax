@@ -6,6 +6,10 @@ summary: 0.9.2 Windows 지원(tzdata·저널 권한 검사·탐색 경로·출�
 
 ## Session Digest
 
+0.9.3(2026-11-04): 로그인 거부 시 홈택스 오류 코드를 보여 준다(원문은 넣지 않고 코드+자체 안내문).
+EDB 갱신 인증서(2027-10-06 만료) 실로그인이 `ETINFZ0109` 홈택스 미등록 인증서로 거부된 것을 계기로 추가.
+EDB 는 홈택스 웹에서 인증서 등록 뒤 `hometax login --company edb`(별칭 edb, `HOMETAX_PW_EDB`)로 재확인.
+
 0.9.2(2026-11-04): Windows 지원. QA VM `vm-develop`(Windows 10 x64 한국어판, Python 3.12)에서 실측한 결함 4가지를 고쳤다.
 1) `ZoneInfo("Asia/Seoul")` 이 tzdata 없이 import 시점에 죽음 → `tzdata; sys_platform == 'win32'` 의존성.
 2) 쓰기 저널이 부모 폴더 `st_mode & 0o077` 검사로 Windows(늘 0o40777)에서 항상 WRITE_JOURNAL_UNAVAILABLE
