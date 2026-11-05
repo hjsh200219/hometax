@@ -100,6 +100,10 @@ HOMETAX_INVOICE_WRITES_ENABLED=false
   CLI `--trust-signed-info`(명시 옵트인, 기본 꺼짐): 다이제스트가 어긋나도 홈택스 웹처럼 서명합니다. 웹 클라이언트도
   `szSignedInfo` 를 대조 없이 서명합니다. 구조·알고리즘·변환·XPath 고정 검사와 발급 뒤 재조회 대조(`_verify_readback`)는
   그대로이고, 미대조 사실을 stderr 로 알립니다. 로컬 API 에는 이 옵션이 없습니다.
+  **2026-11-05 첫 실발행 성공**: `--wire signedinfo --trust-signed-info` 로 신규 단건 1건 발급, 매출 목록·상세 재조회 일치.
+  `trnsXmlCntn` 은 `xmlCntn` 을 Base64 로 담은 같은 문서였고, 서버 SignedInfo 다이제스트는 두 값 어느 쪽으로도
+  재현되지 않았습니다(서버 내부 형태 기준으로 보임). 엄격 모드로 발급하려면 발급된 원본 XML(상세 R02 다운로드)과
+  대조해 서버 규칙을 찾아야 합니다.
   실발행 2회(2026-11-05) 모두 `xmlCntn` 기준 다이제스트가 홈택스 값과 달라 C05 전에 멈췄습니다. 변환 순서·xmlns:ds·들여쓰기·인코딩·
   IssueID·xsi 속성 변형 20여 가지도 불일치였고, `trnsXmlCntn` 은 아직 대조하지 못했습니다.
   실발행 SignedInfo 는 C14N(주석 제외) 정준화에 변환 C14N → XPath 순서였습니다(2026-11-05).
