@@ -1300,9 +1300,19 @@ async def invoice_operation(context: Context, action: str) -> int:
         applied = None
         if args.yes:
             client.invoice_wire_encoding = args.wire
+            client.invoice_signed_info_trust_web = bool(
+                getattr(args, "trust_signed_info", False) and args.wire == "signedinfo"
+            )
             applied = await operations.submit(
                 preview.operation_id, material, open_journal(), preview.content_digest
             )
+            if getattr(client, "invoice_signed_info_unverified", False):
+                print(
+                    "주의: SignedInfo 다이제스트를 미리보기 XML 과 대조하지 못한 채"
+                    " 홈택스 웹처럼 서명했습니다"
+                    "(--trust-signed-info). 발급 뒤 재조회 대조는 통과했습니다.",
+                    file=sys.stderr,
+                )
         show_preview(context, preview, applied)
     finally:
         await client.close()
@@ -1486,6 +1496,15 @@ def build_parser() -> argparse.ArgumentParser:
             "--wire",
             choices=["signedinfo", "raw", "base64"],
             help="홈택스 전송 형식(--yes 일 때 필수). signedinfo 가 홈택스 웹(HTML5)과 같은 방식",
+        )
+        target.add_argument(
+            "--trust-signed-info",
+            action="store_true",
+            help=(
+                "signedinfo 에서 SignedInfo 다이제스트가 미리보기 XML 과 어긋나도"
+                " 홈택스 웹처럼 서명한다"
+                "(구조·변환 고정 검사와 발급 뒤 재조회 대조는 유지)"
+            ),
         )
 
     issue = sub.add_parser("issue", help="세금계산서 발행(기본 미리보기)")

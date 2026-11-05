@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
@@ -200,6 +201,7 @@ def sign_signed_info(
     material: CertificateMaterial,
     *,
     alternatives: tuple[str, ...] = (),
+    on_unverified_digest: Callable[[str], None] | None = None,
 ) -> str:
     """홈택스 HTML5(MagicLine) 발급 서명: C04 가 준 SignedInfo 문자열 자체에 RSA 서명한다.
 
@@ -208,6 +210,12 @@ def sign_signed_info(
     (공개 스크립트 common_teet_sgnt.xml·ML4Web_API.min.js 확인, 2026-11-05).
     SignedInfo 가 미리보기와 대조한 XML 을 가리키는지 확인하려고, 같은 XML 로 이 모듈이 계산한
     DigestValue 와 SignedInfo 의 DigestValue 가 같을 때만 서명한다.
+
+    `on_unverified_digest` 를 주면(사용자가 명시적으로 고른 「홈택스 웹 동등」 모드)
+    다이제스트가 어긋나도
+    서명하고 그 사실을 콜백으로 알린다. 홈택스 웹 클라이언트도 szSignedInfo 를 대조 없이 서명한다.
+    이때도 구조·알고리즘·변환 조합·XPath 고정 검사는 그대로 적용된다.
+    `alternatives` 에는 호출자가 미리보기와 대조를 마친 XML 만 넣는다.
     """
     if not isinstance(signed_info, str) or not signed_info.strip():
         raise InvoiceSigningError("signed_info_missing", "SignedInfo is empty")
@@ -256,11 +264,13 @@ def sign_signed_info(
             checked.append(f"alt{index}:{exc.code}")
     if not actual_digest or actual_digest not in expected:
         # 원인을 한 번에 알 수 있게 정준화·변환 알고리즘과 대조한 후보를 함께 알린다(값 없음).
-        raise InvoiceSigningError(
-            "signed_info_digest_mismatch",
+        detail = (
             "SignedInfo digest does not match the invoice XML"
-            f" (algorithms hometax={_signed_info_algorithms(node)} checked={checked})",
+            f" (algorithms hometax={_signed_info_algorithms(node)} checked={checked})"
         )
+        if on_unverified_digest is None:
+            raise InvoiceSigningError("signed_info_digest_mismatch", detail)
+        on_unverified_digest(detail)
 
     message = signed_info.encode("utf-8")
     try:

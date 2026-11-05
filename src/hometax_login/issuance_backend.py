@@ -285,8 +285,10 @@ class InvoiceBackend:
                 expected_issue_id=c04_document["etan"],
             )
         signatures = [
-            self._signed_document_request(c04_document, material, encoding)
-            for c04_document in c04_documents
+            self._signed_document_request(c04_document, material, encoding, preview_document)
+            for c04_document, preview_document in zip(
+                c04_documents, prepared.documents, strict=True
+            )
         ]
 
         commit_payload = self._commit_payload_from_xml_response(prepared, xml_response, signatures)
@@ -849,9 +851,11 @@ class InvoiceBackend:
             raise changed()
         return documents
 
-    def _signed_document_request(self, document: dict, material, encoding: str) -> dict:
+    def _signed_document_request(
+        self, document: dict, material, encoding: str, preview_document=None
+    ) -> dict:
         if encoding == SIGNED_INFO_ENCODING:
-            return self._signed_info_request(document, material)
+            return self._signed_info_request(document, material, preview_document)
         try:
             signed_xml = sign_invoice_xml(document["xml"], material)
         except InvoiceSigningError as exc:
@@ -879,8 +883,7 @@ class InvoiceBackend:
             "signCert": base64.b64encode(cert_der).decode("ascii"),
         }
 
-    @staticmethod
-    def _signed_info_request(document: dict, material) -> dict:
+    def _signed_info_request(self, document: dict, material, preview_document) -> dict:
         # 홈택스 웹 HTML5 콜백(UTEETBAA01 etCm_MAGIC_PKI_HTML5_Callback)과 같은 필드를 채운다.
         if not document.get("signed_info"):
             raise LoginError(
@@ -888,18 +891,34 @@ class InvoiceBackend:
                 "홈택스 XML 생성 응답에 서명할 SignedInfo 가 없습니다.",
                 409,
             )
+        # trnsXmlCntn 은 미리보기와 같은 문서로 확인될 때만 다이제스트 대조 후보로 쓴다.
+        alternatives = ()
+        try:
+            self._assert_xml_matches_documents(
+                document["transfer"], [preview_document], expected_issue_id=document["etan"]
+            )
+            alternatives = (document["transfer"],)
+        except LoginError:
+            pass
+        unverified = []
+        trust_web = getattr(self.client, "invoice_signed_info_trust_web", False) is True
         try:
             signature = sign_signed_info(
                 document["signed_info"],
                 document["xml"],
                 material,
-                alternatives=(document["transfer"],),
+                alternatives=alternatives,
+                on_unverified_digest=unverified.append if trust_web else None,
             )
         except InvoiceSigningError as exc:
             raise LoginError(
                 "INVOICE_SIGNING_FAILED",
                 f"전자세금계산서 SignedInfo 서명에 실패했습니다({exc.code}: {exc.message}).",
             ) from exc
+        if unverified:
+            # 사용자가 고른 웹 동등 모드: 다이제스트 미대조 사실을 남긴다
+            # (발급 뒤 재조회 대조는 그대로).
+            self.client.invoice_signed_info_unverified = True
         suffix = document["suffix"]
         random_bytes = getattr(material, "random_number", None)
         return {

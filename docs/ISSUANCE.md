@@ -95,7 +95,11 @@ HOMETAX_INVOICE_WRITES_ENABLED=false
   두 장짜리 정정은 `signedinfo` 로 보내지 않습니다(`INVOICE_SIGNED_INFO_UNSUPPORTED`).
   C04 때는 웹처럼 `brwerFg`·`userDn` 을 비워 두고, C05 에 `fnnCrtfYn=N` 을 넣습니다.
   다이제스트 대조는 고정 규격 안에서만 합니다: 변환은 [C14N → XPath] 또는 [XPath → C14N 주석 포함] 두 조합,
-  XPath 식은 `HOMETAX_XPATH` 와 같을 때만(서버가 보낸 식을 그대로 평가하지 않음). 대조 후보는 C04 `xmlCntn`(필수)과 `trnsXmlCntn`.
+  XPath 식은 `HOMETAX_XPATH` 와 같을 때만(서버가 보낸 식을 그대로 평가하지 않음). 대조 후보는 C04 `xmlCntn`(필수)과,
+  미리보기 대조를 통과한 경우에만 `trnsXmlCntn`.
+  CLI `--trust-signed-info`(명시 옵트인, 기본 꺼짐): 다이제스트가 어긋나도 홈택스 웹처럼 서명합니다. 웹 클라이언트도
+  `szSignedInfo` 를 대조 없이 서명합니다. 구조·알고리즘·변환·XPath 고정 검사와 발급 뒤 재조회 대조(`_verify_readback`)는
+  그대로이고, 미대조 사실을 stderr 로 알립니다. 로컬 API 에는 이 옵션이 없습니다.
   실발행 2회(2026-11-05) 모두 `xmlCntn` 기준 다이제스트가 홈택스 값과 달라 C05 전에 멈췄습니다. 변환 순서·xmlns:ds·들여쓰기·인코딩·
   IssueID·xsi 속성 변형 20여 가지도 불일치였고, `trnsXmlCntn` 은 아직 대조하지 못했습니다.
   실발행 SignedInfo 는 C14N(주석 제외) 정준화에 변환 C14N → XPath 순서였습니다(2026-11-05).

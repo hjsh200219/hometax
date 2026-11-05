@@ -129,6 +129,9 @@ class Portal:
         self.tables = {}
         self.tamper_readback = False
         self.signed_infos = {}
+        # signedinfo 다이제스트 대상: "xml"(정상) / "other"(다른 XML) / "transfer"(trnsXmlCntn)
+        self.signed_info_source = "xml"
+        self.transfer_doc = None
 
     def __call__(self, request):
         action = request.url.params.get("actionId")
@@ -171,15 +174,22 @@ class Portal:
                 zip(self.documents, [NEW_APPROVAL, SECOND][: len(self.documents)], strict=True)
             ):
                 suffix = "2" if index else ""
+                transfer = "synthetic-transfer" + suffix
                 if self.encoding == "signedinfo":
-                    signed_info = signed_info_for(xml_document(doc, number), self.material)
+                    source = xml_document(doc, number)
+                    if self.signed_info_source == "other":
+                        source = xml_document({**doc, "remarks": "다른 문서"}, number)
+                    elif self.signed_info_source == "transfer":
+                        transfer = xml_document(self.transfer_doc or doc, number)
+                        source = transfer
+                    signed_info = signed_info_for(source, self.material)
                     self.signed_infos[suffix] = signed_info
                     response["szSignedInfo" + suffix] = signed_info
                 response.update(
                     {
                         "etan" + suffix: number,
                         "xmlCntn" + suffix: xml_document(doc, number),
-                        "trnsXmlCntn" + suffix: "synthetic-transfer" + suffix,
+                        "trnsXmlCntn" + suffix: transfer,
                     }
                 )
                 data["tteetbm101DVO" + suffix] = {"marker": suffix or "first"}
@@ -309,5 +319,80 @@ async def test_full_api_real_client_real_signature_mock_submission(
             assert portal.writes == actions
             assert len(actions) == 2
             assert issued.headers["cache-control"] == "no-store"
+    finally:
+        await app.state.sessions.close()
+
+
+def _signedinfo_client(material, portal):
+    client = HometaxClient(transport=httpx.MockTransport(portal))
+    client.invoice_wire_encoding = "signedinfo"
+    client.signing_certificate_fingerprint = material.certificate.fingerprint(hashes.SHA256()).hex()
+    client.counterparty_changes.backend = FakeCounterpartyBackend()
+    client.invoices.references.update(FakeInvoices(None).references)
+    client.invoices.business_tin = "1112223334"
+    return client
+
+
+@pytest.mark.parametrize(
+    ("source", "trust", "transfer_same", "issued"),
+    [
+        ("other", False, True, False),  # 엄격: 다이제스트 불일치면 C05 전 중단
+        ("other", True, True, True),  # 웹 동등(옵트인): 서명하고 발급, 재조회 대조 통과
+        ("transfer", False, True, True),  # trnsXmlCntn 이 미리보기와 같은 문서면 후보로 인정
+        ("transfer", False, False, False),  # 미리보기와 다른 trnsXmlCntn 은 후보가 아님
+    ],
+)
+async def test_signedinfo_digest_policy(
+    tmp_path, monkeypatch, source, trust, transfer_same, issued
+):
+    material = certificate_material()
+    portal = Portal(material, "signedinfo")
+    portal.signed_info_source = source
+    client = _signedinfo_client(material, portal)
+    client.invoice_signed_info_trust_web = trust
+    app = create_app(
+        Settings(
+            api_keys=(KEY,),
+            invoice_writes_enabled=True,
+            invoice_wire_encoding="signedinfo",
+            write_journal_path=str(tmp_path / "private" / "writes.sqlite3"),
+        )
+    )
+    session = await app.state.sessions.add(
+        hashlib.sha256(KEY.encode()).hexdigest(), client, {"user_id": "user"}
+    )
+    monkeypatch.setattr("hometax_login.api.load_certificate", lambda *args: material)
+    base = f"/v1/hometax/sessions/{session.id}"
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app),
+            base_url="http://local",
+            headers={"Authorization": f"Bearer {KEY}"},
+        ) as api:
+            preview = await api.post(
+                base + "/tax-invoices/drafts", json=issue_request().model_dump(mode="json")
+            )
+            body = preview.json()
+            portal.documents = body["documents"]
+            if not transfer_same:
+                portal.transfer_doc = {**body["documents"][0], "remarks": "다른 문서"}
+            submit = {
+                "confirm": True,
+                "content_digest": body["content_digest"],
+                "cert_type": "der",
+                "cert_file": "Y2VydA==",
+                "key_file": "a2V5",
+                "password": "synthetic-password",
+            }
+            path = base + f"/tax-invoice-operations/{body['operation_id']}/submit"
+            result = await api.post(path, json=submit)
+            if issued:
+                assert result.status_code == 200, result.text
+                assert portal.writes == ["ATEETBAA002C04", "ATEETBAA002C05"]
+                assert client.invoice_signed_info_unverified is (source == "other")
+            else:
+                assert result.status_code == 502
+                assert portal.writes == ["ATEETBAA002C04"]
+                assert "signed_info_digest_mismatch" in result.json()["error"]["message"]
     finally:
         await app.state.sessions.close()

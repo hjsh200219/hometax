@@ -92,6 +92,9 @@ class HometaxClient:
         self.counterparty_changes = CounterpartyChangeManager(self.invoices)
         self.signing_certificate_fingerprint: str | None = None
         self.invoice_wire_encoding: str | None = None
+        # signedinfo 웹 동등 모드(CLI --trust-signed-info 로만 켬)와 그 결과 표시.
+        self.invoice_signed_info_trust_web = False
+        self.invoice_signed_info_unverified = False
         self.invoice_operations = InvoiceOperations(self)
 
     async def close(self):
