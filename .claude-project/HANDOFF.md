@@ -9,7 +9,8 @@ summary: 0.9.2 Windows 지원(tzdata·저널 권한 검사·탐색 경로·출�
 0.9.6(2026-11-05): **첫 실발행 성공** — `issue --wire signedinfo --trust-signed-info`(웹 동등 옵트인)로 1건 발급,
 매출 목록·상세 재조회 일치(수신 이메일 포함). 엄격 다이제스트 대조는 미해결: `trnsXmlCntn` 은 `xmlCntn` 의 Base64 라
 후보가 안 되고, 서버 다이제스트 규칙은 발급된 원본 XML(R02 `fileDwnYn=Y` 다운로드, 아직 미구현)과 대조해야 찾는다.
-도구는 C08(이메일 발송)을 부르지 않는다 — 웹은 C05 성공 뒤 C08 을 부른다. 다음: C08 구현 여부·R02 다운로드.
+도구는 C08(이메일 발송)을 부르지 않지만, 발급 시각에 메일발송목록(UTEETBAB16 R01→R03)에 수신 메일이 등록됐고 웹 발행 건과
+상태가 같았다(둘 다 「발송중」). 재발송 액션은 ATEETBAF001U01. 다음: 엄격 다이제스트 규칙(R02 원본 XML 다운로드로 대조).
 
 0.9.5(2026-11-05): `--wire signedinfo` 추가. 홈택스 웹 HTML5 발급은 C04 응답 `szSignedInfo` 문자열에
 RSA-SHA256(PKCS#1 v1.5) 서명 Base64 를 `xmlCntn`·`sSignData` 로, 원본 XML 을 `ognXML` 로, `brwerFg=Y` 로 C05 에 보낸다
