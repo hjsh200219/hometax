@@ -347,16 +347,76 @@ def test_sign_signed_info_rejects_unexpected_shapes(mutate, code) -> None:
     assert caught.value.code == code
 
 
-def test_sign_signed_info_digest_mismatch_names_differing_algorithms() -> None:
+def hometax_style_signed_info(xml_text: str, material: CertificateMaterial) -> str:
+    """실발행 C04 의 SignedInfo 모양: C14N(주석 제외) 정준화, 변환은 C14N → XPath(2026-11-05)."""
+    import xmlsec
+
+    root = etree.fromstring(xml_text.encode())
+    sig = xmlsec.template.create(
+        root, xmlsec.constants.TransformInclC14N, xmlsec.constants.TransformRsaSha256, ns="ds"
+    )
+    root.append(sig)
+    ref = xmlsec.template.add_reference(sig, xmlsec.constants.TransformSha256, uri="")
+    ref.set("URI", "")
+    xmlsec.template.add_transform(ref, xmlsec.constants.TransformInclC14N)
+    xpath_transform = xmlsec.template.add_transform(ref, xmlsec.constants.TransformXPath)
+    xpath = etree.SubElement(xpath_transform, f"{{{DS_NS}}}XPath", nsmap={"ds": DS_NS})
+    xpath.text = HOMETAX_XPATH
+    xmlsec.template.x509_data_add_certificate(
+        xmlsec.template.add_x509_data(xmlsec.template.ensure_key_info(sig))
+    )
+    pem = material.private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+    ctx = xmlsec.SignatureContext()
+    ctx.key = xmlsec.Key.from_memory(pem, xmlsec.constants.KeyDataFormatPem)
+    ctx.sign(sig)
+    node = sig.find(f"{{{DS_NS}}}SignedInfo")
+    return etree.tostring(node, method="c14n").decode()
+
+
+def test_sign_signed_info_accepts_hometax_transform_order() -> None:
     material = _material()
     xml_text = _invoice_xml()
-    signed_info = signed_info_for(xml_text, material).replace(
-        "REC-xml-c14n-20010315#WithComments", "REC-xml-c14n-20010315", 1
+    signed_info = hometax_style_signed_info(xml_text, material)
+    assert "REC-xml-c14n-20010315#WithComments" not in signed_info
+
+    value = sign_signed_info(signed_info, xml_text, material)
+
+    material.certificate.public_key().verify(
+        base64.b64decode(value, validate=True),
+        signed_info.encode("utf-8"),
+        padding.PKCS1v15(),
+        hashes.SHA256(),
     )
-    signed_info = re.sub(r"<ds:DigestValue>[^<]+", "<ds:DigestValue>AAAA", signed_info)
+
+
+def test_sign_signed_info_digest_mismatch_names_hometax_algorithms() -> None:
+    material = _material()
+    xml_text = _invoice_xml()
+    signed_info = re.sub(
+        r"<ds:DigestValue>[^<]+",
+        "<ds:DigestValue>AAAA",
+        hometax_style_signed_info(xml_text, material),
+    )
 
     with pytest.raises(InvoiceSigningError) as caught:
         sign_signed_info(signed_info, xml_text, material)
 
     assert caught.value.code == "signed_info_digest_mismatch"
     assert "hometax=['REC-xml-c14n-20010315'" in caught.value.message
+
+
+def test_sign_signed_info_rejects_unlisted_transform() -> None:
+    material = _material()
+    xml_text = _invoice_xml()
+    signed_info = signed_info_for(xml_text, material).replace(
+        "REC-xpath-19991116", "REC-xslt-19991116", 1
+    )
+
+    with pytest.raises(InvoiceSigningError) as caught:
+        sign_signed_info(signed_info, xml_text, material)
+
+    assert caught.value.code == "signed_info_transform"

@@ -230,17 +230,16 @@ def sign_signed_info(signed_info: str, invoice_xml: str, material: CertificateMa
         raise InvoiceSigningError("signed_info_digest_method", "SignedInfo digest is not sha256")
     actual_digest = "".join(_single_child(reference, "DigestValue").itertext()).strip()
 
-    own = etree.fromstring(sign_invoice_xml(invoice_xml, material).encode("utf-8"))
-    own_signed_info = own.find(f".//{DS}SignedInfo")
-    own_reference = own_signed_info.find(f"{DS}Reference")
-    expected_digest = "".join(own_reference.find(f"{DS}DigestValue").itertext()).strip()
+    # 홈택스가 SignedInfo 에 적은 정준화·변환을 그대로 써서 같은 XML 의 다이제스트를 다시 계산한다.
+    # 실발행 SignedInfo 는 C14N(주석 제외) → XPath 순서였다(2026-11-05) — 이 모듈의 enveloped
+    # 템플릿(XPath → C14N 주석 포함)과 달라 고정 템플릿으로는 대조할 수 없다.
+    expected_digest = _reference_digest(node, invoice_xml, material)
     if not actual_digest or actual_digest != expected_digest:
         # 원인을 한 번에 알 수 있게 정준화·변환 알고리즘을 함께 알린다(URI 끝부분만, 값 없음).
-        theirs, ours = _signed_info_algorithms(node), _signed_info_algorithms(own_signed_info)
         raise InvoiceSigningError(
             "signed_info_digest_mismatch",
             "SignedInfo digest does not match the invoice XML"
-            + ("" if theirs == ours else f" (algorithms hometax={theirs} ours={ours})"),
+            f" (algorithms hometax={_signed_info_algorithms(node)})",
         )
 
     message = signed_info.encode("utf-8")
@@ -252,6 +251,77 @@ def sign_signed_info(signed_info: str, invoice_xml: str, material: CertificateMa
     except Exception as exc:  # 키 종류·서명 실패는 모두 서명 실패로 닫는다
         raise InvoiceSigningError("sign_failed", "SignedInfo signature failed") from exc
     return base64.b64encode(signature).decode("ascii")
+
+
+_C14N_URI: Final = xmlsec.constants.TransformInclC14N.href
+_SIGNED_INFO_C14N: Final = {
+    _C14N_URI: xmlsec.constants.TransformInclC14N,
+    _C14N_WITH_COMMENTS_URI: xmlsec.constants.TransformInclC14NWithComments,
+}
+_SIGNED_INFO_REFERENCE_TRANSFORMS: Final = {
+    **_SIGNED_INFO_C14N,
+    _XPATH_URI: xmlsec.constants.TransformXPath,
+}
+
+
+def _reference_digest(
+    signed_info: etree._Element, invoice_xml: str, material: CertificateMaterial
+) -> str:
+    """SignedInfo 의 정준화·변환(허용 목록만)으로 invoice_xml 다이제스트를 xmlsec 으로 계산한다."""
+    root = _parse_invoice_xml(invoice_xml)
+    if _find_signatures(root):
+        raise InvoiceSigningError("signed_info_xml_signed", "invoice XML is already signed")
+    c14n_uri = _single_child(signed_info, "CanonicalizationMethod").get("Algorithm")
+    c14n = _SIGNED_INFO_C14N.get(c14n_uri)
+    if c14n is None:
+        raise InvoiceSigningError("signed_info_c14n", "unsupported SignedInfo canonicalization")
+    signature = xmlsec.template.create(root, c14n, xmlsec.constants.TransformRsaSha256, ns="ds")
+    root.append(signature)
+    reference = xmlsec.template.add_reference(signature, xmlsec.constants.TransformSha256, uri="")
+    reference.set("URI", "")
+    their_reference = _single_child(signed_info, "Reference")
+    transforms_node = _children(their_reference, "Transforms")
+    if len(transforms_node) > 1:
+        raise InvoiceSigningError("signed_info_transforms", "SignedInfo has several Transforms")
+    their_transforms = _children(transforms_node[0], "Transform") if transforms_node else []
+    if len(their_transforms) > 4:
+        raise InvoiceSigningError("signed_info_transforms", "SignedInfo has too many transforms")
+    for their in their_transforms:
+        uri = their.get("Algorithm")
+        constant = _SIGNED_INFO_REFERENCE_TRANSFORMS.get(uri)
+        if constant is None:
+            raise InvoiceSigningError("signed_info_transform", "unsupported SignedInfo transform")
+        added = xmlsec.template.add_transform(reference, constant)
+        if uri == _XPATH_URI:
+            _assert_exact_children(their, ("XPath",))
+            their_xpath = _single_child(their, "XPath")
+            if len(their_xpath):
+                raise InvoiceSigningError("signed_info_xpath", "SignedInfo XPath must be text")
+            xpath = etree.SubElement(added, f"{DS}XPath", nsmap=dict(their_xpath.nsmap))
+            xpath.text = their_xpath.text
+        elif len(their):
+            raise InvoiceSigningError("signed_info_transform", "unexpected transform parameters")
+    key_info = xmlsec.template.ensure_key_info(signature)
+    xmlsec.template.x509_data_add_certificate(xmlsec.template.add_x509_data(key_info))
+
+    private_key_pem = material.private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+    try:
+        key = xmlsec.Key.from_memory(private_key_pem, xmlsec.constants.KeyDataFormatPem)
+        ctx = _signature_context(key)
+        ctx.enable_signature_transform(c14n)
+        ctx.enable_signature_transform(xmlsec.constants.TransformRsaSha256)
+        for constant in _SIGNED_INFO_REFERENCE_TRANSFORMS.values():
+            ctx.enable_reference_transform(constant)
+        ctx.enable_reference_transform(xmlsec.constants.TransformSha256)
+        ctx.sign(signature)
+    except xmlsec.Error as exc:
+        raise InvoiceSigningError("signed_info_digest_failed", "digest computation failed") from exc
+    digest = signature.find(f"{DS}SignedInfo/{DS}Reference/{DS}DigestValue")
+    return "".join(digest.itertext()).strip() if digest is not None else ""
 
 
 def _signed_info_algorithms(signed_info: etree._Element) -> list[str]:

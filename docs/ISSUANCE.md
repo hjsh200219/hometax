@@ -94,6 +94,8 @@ HOMETAX_INVOICE_WRITES_ENABLED=false
   `/wcm/et/common_teet_sgnt.xml`(`MakeXMLDSIG(szSignedInfo)`), ML4Web `JS_Crypto_API.signature`(rsa15·sha256).
   두 장짜리 정정은 `signedinfo` 로 보내지 않습니다(`INVOICE_SIGNED_INFO_UNSUPPORTED`).
   C04 때는 웹처럼 `brwerFg`·`userDn` 을 비워 두고, C05 에 `fnnCrtfYn=N` 을 넣습니다.
+  다이제스트 대조는 SignedInfo 가 선언한 정준화·변환(허용 목록: C14N·C14N 주석 포함·XPath)을 그대로 써서 계산합니다.
+  실발행 SignedInfo 는 C14N(주석 제외) 정준화에 변환 C14N → XPath 순서였습니다(2026-11-05).
   웹은 C05 성공 뒤 `ATEETBAA002C08`(이메일 발송)을 따로 부릅니다. 이 도구는 부르지 않으므로
   도구로 발행하면 공급받는자 메일은 홈택스 웹에서 따로 보내야 합니다.
 - `raw`·`base64`: XML 전체에 ds:Signature 를 붙여 `brwerFg=N` 으로 보냅니다. 2026-11-05 실발행에서
