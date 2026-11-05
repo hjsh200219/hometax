@@ -6,6 +6,12 @@ summary: 0.9.2 Windows 지원(tzdata·저널 권한 검사·탐색 경로·출�
 
 ## Session Digest
 
+0.9.4(2026-11-05): 실계정 신규 발행 첫 시도 4회, 발급 0건. (1) 원인 예외가 `from None` 으로 버려져 미확정 오류에
+멈춘 단계를 붙임 (2) C04 XML 대조가 사업자 정보 주소 끝 공백으로 어긋남 → 양쪽 앞뒤 공백 제거·다른 항목 이름 표시
+(3) C05 거절 응답은 `errorCd` 가 아니라 `code` 로 옴 → `code` 도 표시. C05 결과는 `ETICMZ0008` 전자서명 검증 실패
+(base64; raw 코드는 미수집). 다음: 발급된 계산서 XML(상세 R02 `downloadView=Y`, 아직 src 미노출)의 ds:Signature 구조를
+`invoice_signing.sign_invoice_xml` 결과와 대조. 저널에 같은 거래 4건이 `unknown` 으로 남아 있음(해제 기능 없음).
+
 0.9.3(2026-11-04): 로그인 거부 시 홈택스 오류 코드를 보여 준다(원문은 넣지 않고 코드+자체 안내문).
 EDB 갱신 인증서(2027-10-06 만료) 실로그인이 `ETINFZ0109` 홈택스 미등록 인증서로 거부된 것을 계기로 추가.
 EDB 는 홈택스 웹에서 인증서 등록 뒤 `hometax login --company edb`(별칭 edb, `HOMETAX_PW_EDB`)로 재확인.
