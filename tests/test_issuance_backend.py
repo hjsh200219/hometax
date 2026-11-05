@@ -515,11 +515,47 @@ async def test_issue_rejects_tampered_c04_xml_before_commit(monkeypatch):
         await InvoiceBackend(client).issue(prepared, FakeMaterial)
 
     assert caught.value.code == "INVOICE_XML_MISMATCH"
+    # 값 없이 다른 항목 이름만 알린다.
+    assert "(다른 항목: recipient_business_number)" in caught.value.message
+    assert "0000000000" not in caught.value.message
     assert [call[2]["actionId"] for call in client.calls] == [
         "ATEETBAA002R04",
         "ATEETBAA002R04",
         "ATEETBAA002C04",
     ]
+
+
+@pytest.mark.asyncio
+async def test_xml_compare_ignores_outer_whitespace_in_profile_values():
+    # 홈택스 사업자 정보 주소 끝 공백은 XML 에서 지워져 온다(2026-11-05 실발행 중단 사례).
+    client = FakeClient()
+    client.invoices.business_profile["adr"] = "서울 "
+    backend = InvoiceBackend(client)
+    prepared = await backend.preview_issue(issue_request())
+    assert prepared.documents[0].supplier.address == "서울 "
+
+    backend._assert_xml_matches_documents(
+        invoice_xml(),
+        prepared.documents,
+        expected_issue_id="202501021234567890123456",
+    )
+
+
+@pytest.mark.asyncio
+async def test_xml_mismatch_names_line_field():
+    client = FakeClient()
+    backend = InvoiceBackend(client)
+    prepared = await backend.preview_issue(issue_request())
+    prepared.documents[0].items[0].name = "다른 품목"
+
+    with pytest.raises(LoginError) as caught:
+        backend._assert_xml_matches_documents(
+            invoice_xml(),
+            prepared.documents,
+            expected_issue_id="202501021234567890123456",
+        )
+
+    assert "(다른 항목: lines[0].name)" in caught.value.message
 
 
 @pytest.mark.asyncio

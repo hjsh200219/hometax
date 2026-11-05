@@ -970,12 +970,18 @@ class InvoiceBackend:
                 409,
             )
         for xml_document, document in zip(xml_documents, documents, strict=True):
-            if _document_from_xml(xml_document) != _document_binding(
-                document, expected_issue_id=expected_issue_id
-            ):
+            # XML 값은 앞뒤 공백을 지워 읽으므로 미리보기 쪽도 같이 지워 비교한다
+            # (홈택스 사업자 정보 주소 끝 공백으로 실발행이 멈춘 사례, 2026-11-05).
+            differing = _differing_fields(
+                _document_from_xml(xml_document),
+                _stripped(_document_binding(document, expected_issue_id=expected_issue_id)),
+            )
+            if differing:
+                # 값은 넣지 않고 항목 이름만 알린다.
                 raise LoginError(
                     "INVOICE_XML_MISMATCH",
-                    "홈택스 XML이 미리보기 문서와 일치하지 않습니다.",
+                    "홈택스 XML이 미리보기 문서와 일치하지 않습니다"
+                    f"(다른 항목: {', '.join(differing)}).",
                     409,
                 )
 
@@ -1228,6 +1234,31 @@ def _document_binding(
             for line in document.items
         ],
     }
+
+
+def _stripped(value):
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return {key: _stripped(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_stripped(item) for item in value]
+    return value
+
+
+def _differing_fields(actual: dict, expected: dict) -> list[str]:
+    differing = []
+    for key in sorted(set(actual) | set(expected)):
+        left, right = actual.get(key), expected.get(key)
+        if key == "lines" and isinstance(left, list) and isinstance(right, list):
+            if len(left) != len(right):
+                differing.append("lines")
+                continue
+            for index, (a, b) in enumerate(zip(left, right, strict=True)):
+                differing.extend(f"lines[{index}].{name}" for name in _differing_fields(a, b))
+        elif left != right:
+            differing.append(key)
+    return differing
 
 
 def _required(node: etree._Element, localname: str) -> etree._Element:
