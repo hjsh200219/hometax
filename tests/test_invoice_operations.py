@@ -276,6 +276,8 @@ class FakeBackend:
         self.issue_calls.append((copy.deepcopy(prepared_doc), material))
         if self.issue_mode in {"c04", "backend_error", "readback_exception"}:
             raise RuntimeError(self.issue_mode)
+        if self.issue_mode == "login_error":
+            raise LoginError("INVOICE_XML_CREATE_FAILED", "원본 XML 생성 실패(홈택스 오류 E1)")
         if self.issue_mode == "cancel":
             raise asyncio.CancelledError
         if self.issue_mode == "partial":
@@ -517,6 +519,35 @@ async def test_completed_correction_target_blocks_new_client_reference_for_same_
 
     assert caught.value.code == "WRITE_TARGET_COMPLETE"
     assert len(backend.issue_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "cause"),
+    [
+        ("login_error", "원인 INVOICE_XML_CREATE_FAILED: 원본 XML 생성 실패(홈택스 오류 E1)"),
+        ("c04", "원인 RuntimeError"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_unknown_outcome_names_failed_stage_without_raw_text(
+    mode, cause, deterministic_ids, tmp_path
+):
+    material = certificate_material()
+    backend = FakeBackend()
+    backend.issue_mode = mode
+    ops = manager(FakeClient(material), backend)
+    first = await ops.preview_issue(issue_request(REFERENCE_A))
+
+    with pytest.raises(LoginError) as caught:
+        await ops.submit(
+            first.operation_id, material, WriteJournal(journal_path(tmp_path)), first.content_digest
+        )
+
+    assert caught.value.code == "INVOICE_OUTCOME_UNKNOWN"
+    assert caught.value.message.endswith(f"({cause})")
+    # 일반 예외의 문구(원문일 수 있음)는 넣지 않는다.
+    if mode == "c04":
+        assert "c04" not in caught.value.message
 
 
 @pytest.mark.parametrize("mode", ["c04", "backend_error", "partial", "readback_exception"])

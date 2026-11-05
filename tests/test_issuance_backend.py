@@ -643,3 +643,26 @@ async def test_preview_checks_server_issuance_eligibility(response):
     with pytest.raises(LoginError):
         await InvoiceBackend(client).preview_issue(issue_request())
     assert not any("C0" in call[2]["actionId"] for call in client.calls)
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            {"result": "F", "errorCd": "ETEEBA0001", "errorMsg": "원문"},
+            "실패(홈택스 오류 ETEEBA0001)",
+        ),
+        ({"result": "F", "errorCd": "<script>", "errorMsg": "원문"}, "실패"),
+        ({"result": "F", "errorMsg": "원문"}, "실패"),
+        ("F", "실패"),
+    ],
+)
+def test_ok_reports_only_code_shaped_hometax_error(result, expected):
+    from hometax_login.issuance_backend import _ok
+
+    with pytest.raises(LoginError) as caught:
+        _ok({"resultMsg": result}, "INVOICE_XML_CREATE_FAILED", "실패")
+
+    assert caught.value.code == "INVOICE_XML_CREATE_FAILED"
+    assert caught.value.message == expected
+    assert "원문" not in caught.value.message

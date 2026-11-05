@@ -179,9 +179,18 @@ class InvoiceOperations:
             if isinstance(exc, asyncio.CancelledError) or not isinstance(exc, Exception):
                 raise
             if dispatched:
+                # 어느 단계에서 멈췄는지 알아야 홈택스에서 무엇을 확인할지 정할 수 있다.
+                # LoginError 문구는 원문 없는 자체 안내문이라 그대로 붙이고,
+                # 그 밖 예외는 클래스명만 붙인다.
+                cause = (
+                    f"{exc.code}: {exc.message}"
+                    if isinstance(exc, LoginError)
+                    else type(exc).__name__
+                )
                 raise LoginError(
                     "INVOICE_OUTCOME_UNKNOWN",
-                    "발행 결과를 확정하지 못했습니다. 새 요청으로 재발행하지 마세요.",
+                    "발행 결과를 확정하지 못했습니다. 새 요청으로 재발행하지 마세요."
+                    f" (원인 {cause})",
                     502,
                 ) from None
             if isinstance(exc, LoginError):
