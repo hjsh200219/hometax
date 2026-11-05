@@ -1035,7 +1035,11 @@ def _ok(data: dict, code: str, message: str) -> None:
     ):
         # 홈택스 원문(errorMsg)은 넣지 않고 코드 모양인 errorCd 만 알린다
         # (protocol 로그인 거부와 같은 원칙).
-        error_code = result.get("errorCd") if isinstance(result, dict) else None
+        # 실발행 거절 응답은 errorCd 없이 code 로 왔다
+        # (예: ETICMZ0008 전자서명 검증 실패, 2026-11-05).
+        error_code = (
+            (result.get("errorCd") or result.get("code")) if isinstance(result, dict) else None
+        )
         if isinstance(error_code, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", error_code):
             message = f"{message}(홈택스 오류 {error_code})"
         raise LoginError(code, message)

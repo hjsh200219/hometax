@@ -690,6 +690,7 @@ async def test_preview_checks_server_issuance_eligibility(response):
         ),
         ({"result": "F", "errorCd": "<script>", "errorMsg": "원문"}, "실패"),
         ({"result": "F", "errorMsg": "원문"}, "실패"),
+        ({"result": "F", "code": "ETICMZ0008", "msg": "원문"}, "실패(홈택스 오류 ETICMZ0008)"),
         ("F", "실패"),
     ],
 )
