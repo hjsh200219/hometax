@@ -231,11 +231,16 @@ def sign_signed_info(signed_info: str, invoice_xml: str, material: CertificateMa
     actual_digest = "".join(_single_child(reference, "DigestValue").itertext()).strip()
 
     own = etree.fromstring(sign_invoice_xml(invoice_xml, material).encode("utf-8"))
-    own_reference = own.find(f".//{DS}SignedInfo/{DS}Reference")
+    own_signed_info = own.find(f".//{DS}SignedInfo")
+    own_reference = own_signed_info.find(f"{DS}Reference")
     expected_digest = "".join(own_reference.find(f"{DS}DigestValue").itertext()).strip()
     if not actual_digest or actual_digest != expected_digest:
+        # 원인을 한 번에 알 수 있게 정준화·변환 알고리즘을 함께 알린다(URI 끝부분만, 값 없음).
+        theirs, ours = _signed_info_algorithms(node), _signed_info_algorithms(own_signed_info)
         raise InvoiceSigningError(
-            "signed_info_digest_mismatch", "SignedInfo digest does not match the invoice XML"
+            "signed_info_digest_mismatch",
+            "SignedInfo digest does not match the invoice XML"
+            + ("" if theirs == ours else f" (algorithms hometax={theirs} ours={ours})"),
         )
 
     message = signed_info.encode("utf-8")
@@ -247,6 +252,15 @@ def sign_signed_info(signed_info: str, invoice_xml: str, material: CertificateMa
     except Exception as exc:  # 키 종류·서명 실패는 모두 서명 실패로 닫는다
         raise InvoiceSigningError("sign_failed", "SignedInfo signature failed") from exc
     return base64.b64encode(signature).decode("ascii")
+
+
+def _signed_info_algorithms(signed_info: etree._Element) -> list[str]:
+    reference = signed_info.find(f"{DS}Reference")
+    transforms = [] if reference is None else reference.findall(f"{DS}Transforms/{DS}Transform")
+    method = signed_info.find(f"{DS}CanonicalizationMethod")
+    algorithms = [method.get("Algorithm", "") if method is not None else ""]
+    algorithms += [transform.get("Algorithm", "") for transform in transforms]
+    return [value.rsplit("/", 1)[-1].rsplit("#", 1)[-1] for value in algorithms]
 
 
 def _parse_invoice_xml(xml_text: str) -> etree._Element:

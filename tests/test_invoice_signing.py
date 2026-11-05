@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -344,3 +345,18 @@ def test_sign_signed_info_rejects_unexpected_shapes(mutate, code) -> None:
         sign_signed_info(mutate(signed_info_for(xml_text, material)), xml_text, material)
 
     assert caught.value.code == code
+
+
+def test_sign_signed_info_digest_mismatch_names_differing_algorithms() -> None:
+    material = _material()
+    xml_text = _invoice_xml()
+    signed_info = signed_info_for(xml_text, material).replace(
+        "REC-xml-c14n-20010315#WithComments", "REC-xml-c14n-20010315", 1
+    )
+    signed_info = re.sub(r"<ds:DigestValue>[^<]+", "<ds:DigestValue>AAAA", signed_info)
+
+    with pytest.raises(InvoiceSigningError) as caught:
+        sign_signed_info(signed_info, xml_text, material)
+
+    assert caught.value.code == "signed_info_digest_mismatch"
+    assert "hometax=['REC-xml-c14n-20010315'" in caught.value.message

@@ -161,6 +161,10 @@ class Portal:
         if action in {"ATEETBAA002C04", "ATEETBAA003C03"}:
             self.writes.append(action)
             assert payload["isnScrnClCd"] == "10"
+            if self.encoding == "signedinfo":
+                # 웹 HTML5 경로는 C04 때 brwerFg·userDn 을 비워 둔다.
+                assert payload["brwerFg"] == ""
+                assert "userDn" not in payload
             assert payload["dmnrInfrBizSVO"]["dmnrTin"] == "9998887776"
             data, response = {}, {}
             for index, (doc, number) in enumerate(
@@ -192,6 +196,8 @@ class Portal:
                 if self.encoding == "signedinfo":
                     # 홈택스 웹 HTML5 콜백과 같은 필드: brwerFg=Y, 원본은 ognXML, 서명값은 두 곳.
                     assert payload["brwerFg"] == "Y"
+                    assert payload["fnnCrtfYn"] == "N"
+                    assert "userDn" not in payload
                     assert payload["sSignData" + suffix] == signed
                     assert payload["ognXML" + suffix] == xml_document(doc, number)
                     self.material.certificate.public_key().verify(

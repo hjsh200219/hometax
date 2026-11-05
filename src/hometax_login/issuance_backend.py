@@ -266,7 +266,10 @@ class InvoiceBackend:
             )
 
         xml_payload = copy.deepcopy(prepared.payload["xml_payload"])
-        xml_payload["request"].update(self._pre_xml_request(material))
+        if encoding != SIGNED_INFO_ENCODING:
+            # 설치 프로그램(MAGIC-XML) 경로만 C04 전에 brwerFg=N·userDn 을 채운다.
+            # 웹 HTML5 경로는 C04 때 둘 다 비워 둔다(UTEETBAA01 fn_etxivIsnCert PKC 분기).
+            xml_payload["request"].update(self._pre_xml_request(material))
         xml_response = await self._action(
             prepared.payload["xml_action"],
             prepared.payload["screen_id"],
@@ -890,7 +893,7 @@ class InvoiceBackend:
         except InvoiceSigningError as exc:
             raise LoginError(
                 "INVOICE_SIGNING_FAILED",
-                f"전자세금계산서 SignedInfo 서명에 실패했습니다({exc.code}).",
+                f"전자세금계산서 SignedInfo 서명에 실패했습니다({exc.code}: {exc.message}).",
             ) from exc
         suffix = document["suffix"]
         random_bytes = getattr(material, "random_number", None)
@@ -901,11 +904,8 @@ class InvoiceBackend:
             f"xmlCntn{suffix}": signature,
             f"trnsXmlCntn{suffix}": document["transfer"],
             "brwerFg": "Y",
-            "userDn": getattr(
-                material,
-                "certsubjectRFC",
-                material.certificate.subject.rfc4514_string(),
-            ),
+            # 웹 HTML5 콜백은 userDn 을 채우지 않고 공동인증서면 fnnCrtfYn=N 을 보낸다.
+            "fnnCrtfYn": "N",
             "rValue": base64.b64encode(random_bytes or b"").decode("ascii"),
             "signCert": base64.b64encode(material.certificate.public_bytes(Encoding.DER)).decode(
                 "ascii"

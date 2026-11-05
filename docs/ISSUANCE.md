@@ -93,6 +93,9 @@ HOMETAX_INVOICE_WRITES_ENABLED=false
   같을 때만 서명합니다. 근거: 공개 스크립트 `UTEETBAA01.xml`(`etCm_MAGIC_PKI_HTML5_Callback`),
   `/wcm/et/common_teet_sgnt.xml`(`MakeXMLDSIG(szSignedInfo)`), ML4Web `JS_Crypto_API.signature`(rsa15·sha256).
   두 장짜리 정정은 `signedinfo` 로 보내지 않습니다(`INVOICE_SIGNED_INFO_UNSUPPORTED`).
+  C04 때는 웹처럼 `brwerFg`·`userDn` 을 비워 두고, C05 에 `fnnCrtfYn=N` 을 넣습니다.
+  웹은 C05 성공 뒤 `ATEETBAA002C08`(이메일 발송)을 따로 부릅니다. 이 도구는 부르지 않으므로
+  도구로 발행하면 공급받는자 메일은 홈택스 웹에서 따로 보내야 합니다.
 - `raw`·`base64`: XML 전체에 ds:Signature 를 붙여 `brwerFg=N` 으로 보냅니다. 2026-11-05 실발행에서
   `ETICMZ0008`(전자서명 검증 실패)로 거절됐습니다(base64 확인). 신규 발행에 쓰지 마세요.
 
