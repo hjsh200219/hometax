@@ -889,7 +889,12 @@ class InvoiceBackend:
                 409,
             )
         try:
-            signature = sign_signed_info(document["signed_info"], document["xml"], material)
+            signature = sign_signed_info(
+                document["signed_info"],
+                document["xml"],
+                material,
+                alternatives=(document["transfer"],),
+            )
         except InvoiceSigningError as exc:
             raise LoginError(
                 "INVOICE_SIGNING_FAILED",

@@ -420,3 +420,59 @@ def test_sign_signed_info_rejects_unlisted_transform() -> None:
         sign_signed_info(signed_info, xml_text, material)
 
     assert caught.value.code == "signed_info_transform"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "code"),
+    [
+        # 서버가 보낸 XPath 식은 고정값과 다르면 평가하지 않고 거절한다.
+        (lambda s: s.replace("ExchangedDocument", "TaxInvoiceDocument", 1), "signed_info_xpath"),
+        (
+            lambda s: s.replace(
+                'xmlns:ds="http://www.w3.org/2000/09/xmldsig#"', 'xmlns:ds="urn:x"'
+            ),
+            "signed_info_root",
+        ),
+        # 허용 조합(C14N→XPath, XPath→C14N 주석 포함)이 아니면 거절한다.
+        (
+            lambda s: re.sub(
+                r'<ds:Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315">'
+                r"</ds:Transform>",
+                "",
+                s,
+                count=1,
+            ),
+            "signed_info_transform",
+        ),
+    ],
+)
+def test_sign_signed_info_pins_transforms(mutate, code) -> None:
+    material = _material()
+    xml_text = _invoice_xml()
+    signed_info = mutate(hometax_style_signed_info(xml_text, material))
+
+    with pytest.raises(InvoiceSigningError) as caught:
+        sign_signed_info(signed_info, xml_text, material)
+
+    assert caught.value.code == code
+
+
+def test_sign_signed_info_accepts_alternative_xml_digest() -> None:
+    material = _material()
+    primary, transfer = _invoice_xml(), _invoice_xml(header="transfer")
+    signed_info = hometax_style_signed_info(transfer, material)
+
+    value = sign_signed_info(signed_info, primary, material, alternatives=("not xml", transfer))
+
+    assert base64.b64decode(value, validate=True)
+
+
+def test_sign_signed_info_mismatch_lists_checked_candidates() -> None:
+    material = _material()
+    signed_info = hometax_style_signed_info(_invoice_xml(header="other"), material)
+
+    with pytest.raises(InvoiceSigningError) as caught:
+        sign_signed_info(signed_info, _invoice_xml(), material, alternatives=("not xml",))
+
+    assert caught.value.code == "signed_info_digest_mismatch"
+    assert "checked=['xml', 'alt0:invalid_xml']" in caught.value.message

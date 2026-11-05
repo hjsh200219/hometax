@@ -194,7 +194,13 @@ def build_invoice_signature_template(
     return signature
 
 
-def sign_signed_info(signed_info: str, invoice_xml: str, material: CertificateMaterial) -> str:
+def sign_signed_info(
+    signed_info: str,
+    invoice_xml: str,
+    material: CertificateMaterial,
+    *,
+    alternatives: tuple[str, ...] = (),
+) -> str:
     """홈택스 HTML5(MagicLine) 발급 서명: C04 가 준 SignedInfo 문자열 자체에 RSA 서명한다.
 
     홈택스 웹은 원본 XML 에 서명 요소를 붙이지 않는다. 서버가 만든 `szSignedInfo` 문자열(UTF-8)을
@@ -233,13 +239,27 @@ def sign_signed_info(signed_info: str, invoice_xml: str, material: CertificateMa
     # 홈택스가 SignedInfo 에 적은 정준화·변환을 그대로 써서 같은 XML 의 다이제스트를 다시 계산한다.
     # 실발행 SignedInfo 는 C14N(주석 제외) → XPath 순서였다(2026-11-05) — 이 모듈의 enveloped
     # 템플릿(XPath → C14N 주석 포함)과 달라 고정 템플릿으로는 대조할 수 없다.
-    expected_digest = _reference_digest(node, invoice_xml, material)
-    if not actual_digest or actual_digest != expected_digest:
-        # 원인을 한 번에 알 수 있게 정준화·변환 알고리즘을 함께 알린다(URI 끝부분만, 값 없음).
+    # 대조 후보: 미리보기와 대조한 XML(필수) + C04 가 함께 준 다른 XML(예: trnsXmlCntn).
+    # 다른 후보는 TaxInvoice XML 로 읽히지 않으면 건너뛴다.
+    expected = [_reference_digest(node, invoice_xml, material)]
+    checked = ["xml"]
+    for index, alternative in enumerate(alternatives):
+        try:
+            expected.append(_reference_digest(node, alternative, material))
+            checked.append(f"alt{index}")
+        except InvoiceSigningError as exc:
+            if exc.code.startswith("signed_info_") and exc.code not in {
+                "signed_info_xml_signed",
+                "signed_info_digest_failed",
+            }:
+                raise
+            checked.append(f"alt{index}:{exc.code}")
+    if not actual_digest or actual_digest not in expected:
+        # 원인을 한 번에 알 수 있게 정준화·변환 알고리즘과 대조한 후보를 함께 알린다(값 없음).
         raise InvoiceSigningError(
             "signed_info_digest_mismatch",
             "SignedInfo digest does not match the invoice XML"
-            f" (algorithms hometax={_signed_info_algorithms(node)})",
+            f" (algorithms hometax={_signed_info_algorithms(node)} checked={checked})",
         )
 
     message = signed_info.encode("utf-8")
@@ -264,43 +284,59 @@ _SIGNED_INFO_REFERENCE_TRANSFORMS: Final = {
 }
 
 
+def _pinned_reference_transforms(signed_info: etree._Element) -> list[str]:
+    """SignedInfo 변환이 고정 규격(두 조합·HOMETAX_XPATH)과 같은지 확인하고 URI 목록을 돌려준다.
+
+    서버가 보낸 XPath 식이나 namespace 선언을 그대로 평가하지 않는다 — 식이 다르면 거절한다.
+    """
+    reference = _single_child(signed_info, "Reference")
+    transforms = _single_child(reference, "Transforms")
+    _assert_exact_children(transforms, ("Transform",) * len(_children(transforms, "Transform")))
+    uris = []
+    for transform in _children(transforms, "Transform"):
+        uri = transform.get("Algorithm")
+        if uri == _XPATH_URI:
+            _assert_exact_children(transform, ("XPath",))
+            xpath = _single_child(transform, "XPath")
+            if len(xpath) or " ".join((xpath.text or "").split()) != " ".join(
+                HOMETAX_XPATH.split()
+            ):
+                raise InvoiceSigningError("signed_info_xpath", "unexpected SignedInfo XPath")
+            if xpath.nsmap.get("ds") != DS_NS:
+                raise InvoiceSigningError("signed_info_xpath", "SignedInfo XPath ds prefix")
+        elif len(transform):
+            raise InvoiceSigningError("signed_info_transform", "unexpected transform parameters")
+        uris.append(uri)
+    allowed = [
+        [_C14N_URI, _XPATH_URI],
+        [_XPATH_URI, _C14N_WITH_COMMENTS_URI],
+    ]
+    if uris not in allowed:
+        raise InvoiceSigningError("signed_info_transform", "unsupported SignedInfo transforms")
+    return uris
+
+
 def _reference_digest(
     signed_info: etree._Element, invoice_xml: str, material: CertificateMaterial
 ) -> str:
-    """SignedInfo 의 정준화·변환(허용 목록만)으로 invoice_xml 다이제스트를 xmlsec 으로 계산한다."""
-    root = _parse_invoice_xml(invoice_xml)
-    if _find_signatures(root):
-        raise InvoiceSigningError("signed_info_xml_signed", "invoice XML is already signed")
+    """고정 규격 안에서 SignedInfo 와 같은 정준화·변환으로 invoice_xml 다이제스트를 계산한다."""
     c14n_uri = _single_child(signed_info, "CanonicalizationMethod").get("Algorithm")
     c14n = _SIGNED_INFO_C14N.get(c14n_uri)
     if c14n is None:
         raise InvoiceSigningError("signed_info_c14n", "unsupported SignedInfo canonicalization")
+    uris = _pinned_reference_transforms(signed_info)
+    root = _parse_invoice_xml(invoice_xml)
+    if _find_signatures(root):
+        raise InvoiceSigningError("signed_info_xml_signed", "invoice XML is already signed")
     signature = xmlsec.template.create(root, c14n, xmlsec.constants.TransformRsaSha256, ns="ds")
     root.append(signature)
     reference = xmlsec.template.add_reference(signature, xmlsec.constants.TransformSha256, uri="")
     reference.set("URI", "")
-    their_reference = _single_child(signed_info, "Reference")
-    transforms_node = _children(their_reference, "Transforms")
-    if len(transforms_node) > 1:
-        raise InvoiceSigningError("signed_info_transforms", "SignedInfo has several Transforms")
-    their_transforms = _children(transforms_node[0], "Transform") if transforms_node else []
-    if len(their_transforms) > 4:
-        raise InvoiceSigningError("signed_info_transforms", "SignedInfo has too many transforms")
-    for their in their_transforms:
-        uri = their.get("Algorithm")
-        constant = _SIGNED_INFO_REFERENCE_TRANSFORMS.get(uri)
-        if constant is None:
-            raise InvoiceSigningError("signed_info_transform", "unsupported SignedInfo transform")
-        added = xmlsec.template.add_transform(reference, constant)
+    for uri in uris:
+        added = xmlsec.template.add_transform(reference, _SIGNED_INFO_REFERENCE_TRANSFORMS[uri])
         if uri == _XPATH_URI:
-            _assert_exact_children(their, ("XPath",))
-            their_xpath = _single_child(their, "XPath")
-            if len(their_xpath):
-                raise InvoiceSigningError("signed_info_xpath", "SignedInfo XPath must be text")
-            xpath = etree.SubElement(added, f"{DS}XPath", nsmap=dict(their_xpath.nsmap))
-            xpath.text = their_xpath.text
-        elif len(their):
-            raise InvoiceSigningError("signed_info_transform", "unexpected transform parameters")
+            xpath = etree.SubElement(added, f"{DS}XPath", nsmap={"ds": DS_NS})
+            xpath.text = HOMETAX_XPATH
     key_info = xmlsec.template.ensure_key_info(signature)
     xmlsec.template.x509_data_add_certificate(xmlsec.template.add_x509_data(key_info))
 
