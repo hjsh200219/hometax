@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from .counterparty_changes import CounterpartySnapshot, fingerprint
 from .errors import LoginError
-from .invoice_signing import InvoiceSigningError, sign_invoice_xml
+from .invoice_signing import InvoiceSigningError, sign_invoice_xml, sign_signed_info
 from .invoices import ET_BASE, LIST_SCREEN, approval_number, changed, integer
 from .issuance_models import (
     InvoiceCancelRequest,
@@ -53,7 +53,9 @@ CORRECTION_SCREEN_CODES = {
     "duplicate_issue": "42",
 }
 PURPOSE_CODES = {"receipt": "01", "claim": "02"}
-ALLOWED_WIRE_ENCODINGS = {"raw", "base64"}
+# signedinfo: 홈택스 웹 HTML5(MagicLine) 방식 — C04 의 szSignedInfo 에 RSA 서명(단건 발행만).
+SIGNED_INFO_ENCODING = "signedinfo"
+ALLOWED_WIRE_ENCODINGS = {"raw", "base64", SIGNED_INFO_ENCODING}
 
 
 class InvoiceBackend:
@@ -247,6 +249,12 @@ class InvoiceBackend:
             raise LoginError(
                 "INVOICE_WIRE_ENCODING_REQUIRED",
                 "홈택스 서명 XML 전송 형식(raw/base64)을 먼저 검증해야 합니다.",
+                409,
+            )
+        if encoding == SIGNED_INFO_ENCODING and len(prepared.documents) != 1:
+            raise LoginError(
+                "INVOICE_SIGNED_INFO_UNSUPPORTED",
+                "signedinfo 전송은 단건 신규 발행만 지원합니다.",
                 409,
             )
         current = await self.refresh(prepared)
@@ -821,6 +829,7 @@ class InvoiceBackend:
             xml = _text(response.get(f"xmlCntn{suffix}"))
             transfer = _text(response.get(f"trnsXmlCntn{suffix}"))
             etan = _text(response.get(f"etan{suffix}"))
+            signed_info = _text(response.get(f"szSignedInfo{suffix}"))
             if xml or transfer or etan:
                 if not xml or not transfer or not etan:
                     raise changed()
@@ -830,6 +839,7 @@ class InvoiceBackend:
                         "xml": xml,
                         "transfer": transfer,
                         "etan": approval_number(etan),
+                        "signed_info": signed_info,
                     }
                 )
         if len(documents) != expected:
@@ -837,6 +847,8 @@ class InvoiceBackend:
         return documents
 
     def _signed_document_request(self, document: dict, material, encoding: str) -> dict:
+        if encoding == SIGNED_INFO_ENCODING:
+            return self._signed_info_request(document, material)
         try:
             signed_xml = sign_invoice_xml(document["xml"], material)
         except InvoiceSigningError as exc:
@@ -862,6 +874,42 @@ class InvoiceBackend:
             ),
             "rValue": base64.b64encode(random_bytes or b"").decode("ascii"),
             "signCert": base64.b64encode(cert_der).decode("ascii"),
+        }
+
+    @staticmethod
+    def _signed_info_request(document: dict, material) -> dict:
+        # 홈택스 웹 HTML5 콜백(UTEETBAA01 etCm_MAGIC_PKI_HTML5_Callback)과 같은 필드를 채운다.
+        if not document.get("signed_info"):
+            raise LoginError(
+                "INVOICE_SIGNED_INFO_MISSING",
+                "홈택스 XML 생성 응답에 서명할 SignedInfo 가 없습니다.",
+                409,
+            )
+        try:
+            signature = sign_signed_info(document["signed_info"], document["xml"], material)
+        except InvoiceSigningError as exc:
+            raise LoginError(
+                "INVOICE_SIGNING_FAILED",
+                f"전자세금계산서 SignedInfo 서명에 실패했습니다({exc.code}).",
+            ) from exc
+        suffix = document["suffix"]
+        random_bytes = getattr(material, "random_number", None)
+        return {
+            f"etan{suffix}": document["etan"],
+            f"ognXML{suffix}": document["xml"],
+            f"sSignData{suffix}": signature,
+            f"xmlCntn{suffix}": signature,
+            f"trnsXmlCntn{suffix}": document["transfer"],
+            "brwerFg": "Y",
+            "userDn": getattr(
+                material,
+                "certsubjectRFC",
+                material.certificate.subject.rfc4514_string(),
+            ),
+            "rValue": base64.b64encode(random_bytes or b"").decode("ascii"),
+            "signCert": base64.b64encode(material.certificate.public_bytes(Encoding.DER)).decode(
+                "ascii"
+            ),
         }
 
     @staticmethod

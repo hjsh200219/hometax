@@ -81,12 +81,21 @@
 ```dotenv
 HOMETAX_INVOICE_WRITES_ENABLED=false
 # 아래 값은 호환성을 검증한 프로필만 명시적으로 선택합니다.
-# HOMETAX_INVOICE_WIRE_ENCODING=raw
+# HOMETAX_INVOICE_WIRE_ENCODING=signedinfo
 ```
 
 발행 전송을 활성화하려면 `HOMETAX_INVOICE_WRITES_ENABLED=true`와
-`HOMETAX_INVOICE_WIRE_ENCODING=raw` 또는 `base64`를 함께 지정해야 합니다.
-**raw/base64 중 어느 값이 실제 홈택스 MagicLine 반환값과 완전히 호환되는지는 아직 실발행 검증하지 않았습니다.**
+`HOMETAX_INVOICE_WIRE_ENCODING`(`signedinfo`·`raw`·`base64`)를 함께 지정해야 합니다.
+
+- `signedinfo`(신규 단건 발행): 홈택스 웹 HTML5 경로와 같습니다. C04 응답의 `szSignedInfo` 문자열(UTF-8)을
+  RSASSA-PKCS1-v1_5 + SHA-256 으로 서명하고, C05 에 `brwerFg=Y`, `xmlCntn`·`sSignData`=서명 Base64,
+  `ognXML`=C04 원본 XML 을 보냅니다. SignedInfo 의 DigestValue 가 미리보기와 대조한 XML 로 계산한 값과
+  같을 때만 서명합니다. 근거: 공개 스크립트 `UTEETBAA01.xml`(`etCm_MAGIC_PKI_HTML5_Callback`),
+  `/wcm/et/common_teet_sgnt.xml`(`MakeXMLDSIG(szSignedInfo)`), ML4Web `JS_Crypto_API.signature`(rsa15·sha256).
+  두 장짜리 정정은 `signedinfo` 로 보내지 않습니다(`INVOICE_SIGNED_INFO_UNSUPPORTED`).
+- `raw`·`base64`: XML 전체에 ds:Signature 를 붙여 `brwerFg=N` 으로 보냅니다. 2026-11-05 실발행에서
+  `ETICMZ0008`(전자서명 검증 실패)로 거절됐습니다(base64 확인). 신규 발행에 쓰지 마세요.
+
 값을 추측해 운영 전송을 켜지 마세요. 다른 프로필을 자동 재시도하지 않습니다.
 거래처 관리 쓰기 설정과 세금계산서 전송 설정은 서로 독립입니다.
 
@@ -154,7 +163,7 @@ CLI의 `--yes` 발행·정정·취소는 선택한 인증서로 한 번 새로 �
 발행용 XML 생성·최종 발급·수정발급·메일 발송 action은 개발 중에는 실제 실행하지 않았습니다.
 2026-11-05 실계정 신규 발행 4회 시도(발급 0건): C04 XML 생성·미리보기 대조는 통과했고(주소 끝 공백 비교 수정 뒤),
 C05 최종 발급에서 홈택스가 `ETICMZ0008`(전자서명 검증 실패)로 거절했습니다(`base64` 확인, `raw` 는 거절 코드 미수집).
-전송 형식만이 아니라 서명 자체가 홈택스 검증과 다를 수 있으므로, 발급된 계산서 XML 의 서명 구조와 대조하기 전에는 실전송하지 마세요.
+원인은 서명 방식이었습니다. 홈택스 웹은 XML 전체가 아니라 C04 의 `szSignedInfo` 에 서명합니다 → `signedinfo` 프로필(0.9.5).
 시도마다 C04 식별자 예약과 저널 `unknown` 행이 남습니다.
 모의 HTTP, 합성 인증서, 서명 검증, 기존 발행 내역의 읽기 전용 XML 구조 확인을 검증 근거로 사용합니다.
 실제 홈택스의 서명 전송 형식, IPInside 선택 필드, 시기별 업무 검증·경고까지 호환된다는 보장은 아닙니다.

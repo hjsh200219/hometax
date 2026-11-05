@@ -6,6 +6,11 @@ summary: 0.9.2 Windows 지원(tzdata·저널 권한 검사·탐색 경로·출�
 
 ## Session Digest
 
+0.9.5(2026-11-05): `--wire signedinfo` 추가. 홈택스 웹 HTML5 발급은 C04 응답 `szSignedInfo` 문자열에
+RSA-SHA256(PKCS#1 v1.5) 서명 Base64 를 `xmlCntn`·`sSignData` 로, 원본 XML 을 `ognXML` 로, `brwerFg=Y` 로 C05 에 보낸다
+(공개 스크립트 UTEETBAA01·common_teet_sgnt·ML4Web_API 확인). SignedInfo DigestValue 가 대조 끝난 XML 로 계산한 값과
+같을 때만 서명. 단건 신규 발행만(정정 2장은 거절). 실발행 확인 전.
+
 0.9.4(2026-11-05): 실계정 신규 발행 첫 시도 4회, 발급 0건. (1) 원인 예외가 `from None` 으로 버려져 미확정 오류에
 멈춘 단계를 붙임 (2) C04 XML 대조가 사업자 정보 주소 끝 공백으로 어긋남 → 양쪽 앞뒤 공백 제거·다른 항목 이름 표시
 (3) C05 거절 응답은 `errorCd` 가 아니라 `code` 로 옴 → `code` 도 표시. C05 결과는 `ETICMZ0008` 전자서명 검증 실패

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import NameOID
 from lxml import etree
 
@@ -18,6 +18,7 @@ from hometax_login.invoice_signing import (
     InvoiceSigningError,
     build_invoice_signature_template,
     sign_invoice_xml,
+    sign_signed_info,
     verify_invoice_xml,
 )
 
@@ -291,3 +292,55 @@ def _material() -> CertificateMaterial:
         serialization.NoEncryption(),
     )
     return CertificateMaterial(cert, key, private_key_der, None)
+
+
+def signed_info_for(xml_text: str, material: CertificateMaterial) -> str:
+    """홈택스 C04 의 szSignedInfo 를 흉내 낸다: 같은 XML 서명의 SignedInfo 를 c14n 한 문자열."""
+    root = etree.fromstring(sign_invoice_xml(xml_text, material).encode())
+    node = root.find(f".//{{{DS_NS}}}SignedInfo")
+    return etree.tostring(node, method="c14n", with_comments=True).decode()
+
+
+def test_sign_signed_info_is_rsa_sha256_over_signed_info_bytes() -> None:
+    material = _material()
+    xml_text = _invoice_xml()
+    signed_info = signed_info_for(xml_text, material)
+
+    value = sign_signed_info(signed_info, xml_text, material)
+
+    material.certificate.public_key().verify(
+        base64.b64decode(value, validate=True),
+        signed_info.encode("utf-8"),
+        padding.PKCS1v15(),
+        hashes.SHA256(),
+    )
+
+
+def test_sign_signed_info_refuses_digest_of_other_xml() -> None:
+    material = _material()
+    other_signed_info = signed_info_for(_invoice_xml(header="other"), material)
+
+    with pytest.raises(InvoiceSigningError) as caught:
+        sign_signed_info(other_signed_info, _invoice_xml(), material)
+
+    assert caught.value.code == "signed_info_digest_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "code"),
+    [
+        (lambda s: s.replace("rsa-sha256", "rsa-sha1"), "signed_info_method"),
+        (lambda s: s.replace('URI=""', 'URI="#x"'), "signed_info_reference"),
+        (lambda s: s.replace("SignedInfo", "Manifest"), "signed_info_root"),
+        (lambda s: "", "signed_info_missing"),
+        (lambda s: "<!DOCTYPE x>" + s, "doctype_forbidden"),
+    ],
+)
+def test_sign_signed_info_rejects_unexpected_shapes(mutate, code) -> None:
+    material = _material()
+    xml_text = _invoice_xml()
+
+    with pytest.raises(InvoiceSigningError) as caught:
+        sign_signed_info(mutate(signed_info_for(xml_text, material)), xml_text, material)
+
+    assert caught.value.code == code

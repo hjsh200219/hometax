@@ -173,14 +173,16 @@ hometax add-counterparty --business-number 1234567890 --name 예시상사       
 hometax add-counterparty --business-number 1234567890 --name 예시상사 --yes  # 실제 등록
 hometax edit-counterparty --business-number 1234567890 --file patch.json
 hometax remove-counterparty --business-number 1234567890
-hometax issue   --file draft.json --wire raw --yes
-hometax correct --approval <승인번호> --file draft.json --wire raw --yes
+hometax issue   --file draft.json --wire signedinfo --yes
+hometax correct --approval <승인번호> --file draft.json --wire raw --yes      # 정정·취소는 미검증
 hometax cancel  --approval <승인번호> --reason contract_cancellation --wire raw --yes
 ```
 
 - `--yes` 없이는 **홈택스로 아무것도 보내지 않습니다.** 미리보기와 전송은 한 실행 안에서만
   이어지고, 미리보기 식별자는 프로세스 밖으로 나가지 않습니다.
-- 발행 계열 전송에는 `--wire raw|base64`가 필요합니다. 전송 형식을 추측하지 않습니다.
+- 발행 계열 전송에는 `--wire`가 필요합니다. 신규 단건 발행은 홈택스 웹(HTML5)과 같은 `signedinfo`
+  (C04 가 준 SignedInfo 에 RSA-SHA256 서명)를 씁니다. `raw`·`base64`(XML 전체 서명)는 2026-11-05
+  실발행에서 `ETICMZ0008` 전자서명 검증 실패로 거절됐습니다. 정정·취소의 `signedinfo` 는 아직 지원하지 않습니다.
 - 중복 전송은 `~/.hometax/writes.sqlite3` 저널이 막습니다. 결과가 불확실하면 같은 대상을
   차단합니다. **저널을 지워 우회하지 마세요.** 홈택스에서 실제 반영 여부를 먼저 확인하세요.
 - 발행·정정·취소의 `--yes` 실행은 선택한 인증서로 새로 로그인합니다. 저장된 조회 세션의

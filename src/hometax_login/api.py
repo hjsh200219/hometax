@@ -67,7 +67,7 @@ class Settings:
     counterparty_writes_enabled: bool = False
     invoice_writes_enabled: bool = False
     write_journal_path: str = ".state/counterparty-writes.sqlite3"
-    invoice_wire_encoding: Literal["raw", "base64"] | None = None
+    invoice_wire_encoding: Literal["signedinfo", "raw", "base64"] | None = None
 
     def __post_init__(self):
         if type(self.counterparty_writes_enabled) is not bool:
@@ -76,8 +76,8 @@ class Settings:
             raise ValueError("invoice_writes_enabled must be a boolean")
         if not isinstance(self.write_journal_path, str) or not self.write_journal_path.strip():
             raise ValueError("write_journal_path must be a non-empty path")
-        if self.invoice_wire_encoding not in {None, "raw", "base64"}:
-            raise ValueError("invoice_wire_encoding must be 'raw', 'base64', or None")
+        if self.invoice_wire_encoding not in {None, "signedinfo", "raw", "base64"}:
+            raise ValueError("invoice_wire_encoding must be 'signedinfo', 'raw', 'base64', or None")
         if self.invoice_writes_enabled and self.invoice_wire_encoding is None:
             raise ValueError("invoice_wire_encoding is required when invoice writes are enabled")
         if not self.api_keys or any(len(k) < 32 for k in self.api_keys):

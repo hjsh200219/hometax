@@ -703,3 +703,35 @@ def test_ok_reports_only_code_shaped_hometax_error(result, expected):
     assert caught.value.code == "INVOICE_XML_CREATE_FAILED"
     assert caught.value.message == expected
     assert "원문" not in caught.value.message
+
+
+@pytest.mark.asyncio
+async def test_signedinfo_refuses_two_document_correction_before_write():
+    client = FakeClient({"ATEETBDA001R02": detail_response(APPROVAL)}, encoding="signedinfo")
+    backend = InvoiceBackend(client)
+    prepared = await backend.preview_correct(
+        APPROVAL,
+        InvoiceCorrectionRequest(**issue_request().model_dump(), reason="clerical_error"),
+    )
+    before = [call[2]["actionId"] for call in client.calls]
+
+    with pytest.raises(LoginError) as caught:
+        await backend.issue(prepared, FakeMaterial)
+
+    assert caught.value.code == "INVOICE_SIGNED_INFO_UNSUPPORTED"
+    assert [call[2]["actionId"] for call in client.calls] == before
+
+
+@pytest.mark.asyncio
+async def test_signedinfo_requires_signed_info_in_c04_response():
+    client = FakeClient(
+        {"ATEETBAA002C04": xml_response(xmlCntn=invoice_xml())}, encoding="signedinfo"
+    )
+    backend = InvoiceBackend(client)
+    prepared = await backend.preview_issue(issue_request())
+
+    with pytest.raises(LoginError) as caught:
+        await backend.issue(prepared, FakeMaterial)
+
+    assert caught.value.code == "INVOICE_SIGNED_INFO_MISSING"
+    assert "ATEETBAA002C05" not in [call[2]["actionId"] for call in client.calls]

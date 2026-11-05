@@ -116,7 +116,9 @@ class InvoiceOperations:
             )
         if not material.random_number:
             raise LoginError("CERT_RANDOM_MISSING", "NPKI VID 난수가 필요합니다.", 422)
-        if self.client.invoice_wire_encoding not in {"raw", "base64"}:
+        from .issuance_backend import ALLOWED_WIRE_ENCODINGS
+
+        if self.client.invoice_wire_encoding not in ALLOWED_WIRE_ENCODINGS:
             raise LoginError(
                 "INVOICE_SIGNING_PROFILE_REQUIRED", "검증할 XML 서명 전송 프로필을 설정하세요.", 503
             )

@@ -8,7 +8,8 @@ from typing import Final
 
 import xmlsec
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 from lxml import etree
 
 from .certificates import CertificateMaterial
@@ -191,6 +192,61 @@ def build_invoice_signature_template(
     x509_data = xmlsec.template.add_x509_data(key_info)
     xmlsec.template.x509_data_add_certificate(x509_data)
     return signature
+
+
+def sign_signed_info(signed_info: str, invoice_xml: str, material: CertificateMaterial) -> str:
+    """홈택스 HTML5(MagicLine) 발급 서명: C04 가 준 SignedInfo 문자열 자체에 RSA 서명한다.
+
+    홈택스 웹은 원본 XML 에 서명 요소를 붙이지 않는다. 서버가 만든 `szSignedInfo` 문자열(UTF-8)을
+    RSASSA-PKCS1-v1_5 + SHA-256 으로 서명해 그 Base64 를 보내고, 서버가 Signature 를 조립한다
+    (공개 스크립트 common_teet_sgnt.xml·ML4Web_API.min.js 확인, 2026-11-05).
+    SignedInfo 가 미리보기와 대조한 XML 을 가리키는지 확인하려고, 같은 XML 로 이 모듈이 계산한
+    DigestValue 와 SignedInfo 의 DigestValue 가 같을 때만 서명한다.
+    """
+    if not isinstance(signed_info, str) or not signed_info.strip():
+        raise InvoiceSigningError("signed_info_missing", "SignedInfo is empty")
+    if len(signed_info.encode("utf-8")) > 65536:
+        raise InvoiceSigningError("signed_info_too_large", "SignedInfo is too large")
+    upper = signed_info.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
+        raise InvoiceSigningError("doctype_forbidden", "SignedInfo must not include a DOCTYPE")
+    parser = etree.XMLParser(
+        encoding="utf-8", resolve_entities=False, no_network=True, load_dtd=False
+    )
+    try:
+        node = etree.fromstring(signed_info.encode("utf-8"), parser=parser)
+    except etree.XMLSyntaxError as exc:
+        raise InvoiceSigningError("signed_info_invalid", "SignedInfo could not be parsed") from exc
+    qname = etree.QName(node)
+    if qname.localname != "SignedInfo" or qname.namespace != DS_NS:
+        raise InvoiceSigningError("signed_info_root", "SignedInfo root is not ds:SignedInfo")
+    method = _single_child(node, "SignatureMethod").get("Algorithm")
+    if method != _RSA_SHA256_URI:
+        raise InvoiceSigningError("signed_info_method", "SignedInfo is not rsa-sha256")
+    reference = _single_child(node, "Reference")
+    if reference.get("URI") != "":
+        raise InvoiceSigningError("signed_info_reference", "SignedInfo must reference the document")
+    if _single_child(reference, "DigestMethod").get("Algorithm") != _SHA256_URI:
+        raise InvoiceSigningError("signed_info_digest_method", "SignedInfo digest is not sha256")
+    actual_digest = "".join(_single_child(reference, "DigestValue").itertext()).strip()
+
+    own = etree.fromstring(sign_invoice_xml(invoice_xml, material).encode("utf-8"))
+    own_reference = own.find(f".//{DS}SignedInfo/{DS}Reference")
+    expected_digest = "".join(own_reference.find(f"{DS}DigestValue").itertext()).strip()
+    if not actual_digest or actual_digest != expected_digest:
+        raise InvoiceSigningError(
+            "signed_info_digest_mismatch", "SignedInfo digest does not match the invoice XML"
+        )
+
+    message = signed_info.encode("utf-8")
+    try:
+        signature = material.private_key.sign(message, padding.PKCS1v15(), hashes.SHA256())
+        material.certificate.public_key().verify(
+            signature, message, padding.PKCS1v15(), hashes.SHA256()
+        )
+    except Exception as exc:  # 키 종류·서명 실패는 모두 서명 실패로 닫는다
+        raise InvoiceSigningError("sign_failed", "SignedInfo signature failed") from exc
+    return base64.b64encode(signature).decode("ascii")
 
 
 def _parse_invoice_xml(xml_text: str) -> etree._Element:

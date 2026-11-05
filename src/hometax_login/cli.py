@@ -1262,7 +1262,8 @@ async def invoice_operation(context: Context, action: str) -> int:
         )
     if args.yes and not getattr(args, "wire", None):
         raise CommandError(
-            "전송에는 --wire raw 또는 --wire base64 가 필요합니다(홈택스 전송 형식)."
+            "전송에는 --wire signedinfo(홈택스 웹 방식)가 필요합니다"
+            "(raw·base64 는 실발행에서 서명 검증 실패)."
         )
     entry = pick_certificate(args) if args.yes else None
     material = (
@@ -1482,7 +1483,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_wire_option(target):
         target.add_argument(
-            "--wire", choices=["raw", "base64"], help="홈택스 전송 형식(--yes 일 때 필수)"
+            "--wire",
+            choices=["signedinfo", "raw", "base64"],
+            help="홈택스 전송 형식(--yes 일 때 필수). signedinfo 가 홈택스 웹(HTML5)과 같은 방식",
         )
 
     issue = sub.add_parser("issue", help="세금계산서 발행(기본 미리보기)")

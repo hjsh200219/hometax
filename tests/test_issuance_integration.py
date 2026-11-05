@@ -8,8 +8,10 @@ import json
 import httpx
 import pytest
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
 from lxml import etree
 from test_invoice_operations import certificate_material
+from test_invoice_signing import signed_info_for
 from test_issuance_backend import (
     APPROVAL,
     NEW_APPROVAL,
@@ -126,6 +128,7 @@ class Portal:
         self.issued = {}
         self.tables = {}
         self.tamper_readback = False
+        self.signed_infos = {}
 
     def __call__(self, request):
         action = request.url.params.get("actionId")
@@ -164,6 +167,10 @@ class Portal:
                 zip(self.documents, [NEW_APPROVAL, SECOND][: len(self.documents)], strict=True)
             ):
                 suffix = "2" if index else ""
+                if self.encoding == "signedinfo":
+                    signed_info = signed_info_for(xml_document(doc, number), self.material)
+                    self.signed_infos[suffix] = signed_info
+                    response["szSignedInfo" + suffix] = signed_info
                 response.update(
                     {
                         "etan" + suffix: number,
@@ -180,10 +187,23 @@ class Portal:
             self.writes.append(action)
             ids = [NEW_APPROVAL, SECOND][: len(self.documents)]
             for index, (doc, number) in enumerate(zip(self.documents, ids, strict=True)):
-                signed = payload["xmlCntn" + ("2" if index else "")]
-                if self.encoding == "base64":
-                    signed = base64.b64decode(signed, validate=True).decode()
-                verify_invoice_xml(signed, self.material.certificate)
+                suffix = "2" if index else ""
+                signed = payload["xmlCntn" + suffix]
+                if self.encoding == "signedinfo":
+                    # 홈택스 웹 HTML5 콜백과 같은 필드: brwerFg=Y, 원본은 ognXML, 서명값은 두 곳.
+                    assert payload["brwerFg"] == "Y"
+                    assert payload["sSignData" + suffix] == signed
+                    assert payload["ognXML" + suffix] == xml_document(doc, number)
+                    self.material.certificate.public_key().verify(
+                        base64.b64decode(signed, validate=True),
+                        self.signed_infos[suffix].encode("utf-8"),
+                        padding.PKCS1v15(),
+                        hashes.SHA256(),
+                    )
+                else:
+                    if self.encoding == "base64":
+                        signed = base64.b64decode(signed, validate=True).decode()
+                    verify_invoice_xml(signed, self.material.certificate)
                 self.issued[number] = detail_for(doc, number)
                 if self.tamper_readback:
                     self.issued[number]["etxivIsnBrkdTermDVO"]["recApeClCd"] = "01"
@@ -197,6 +217,7 @@ class Portal:
 @pytest.mark.parametrize(
     "operation,encoding",
     [
+        ("issue", "signedinfo"),
         ("issue", "raw"),
         ("issue", "base64"),
         ("correct", "raw"),
